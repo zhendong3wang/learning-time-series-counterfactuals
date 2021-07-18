@@ -31,15 +31,12 @@ class ResultWriter:
                 "best_lr",
                 "proximity",
                 "validity",
-                "compactness",
-                "cost_mean",
-                "cost_std",
-                "neighbour_counts_radius",
-                "distance_knn"
+                "margin_mean",
+                "margin_std",
             ])
         
     def write_result(self, method_name, acc, ae_loss, best_lr, evaluate_res):
-        proxi, valid, compact, cost_mean, cost_std, neigh_count, dist_knn = evaluate_res
+        proxi, valid, cost_mean, cost_std= evaluate_res
         
         with open(self.file_name, 'a') as f:
             writer = csv.writer(f)
@@ -51,11 +48,8 @@ class ResultWriter:
                 best_lr,
                 proxi,
                 valid,
-                compact,
                 cost_mean,
-                cost_std,
-                neigh_count,
-                dist_knn
+                cost_std
             ])
 
 
@@ -154,13 +148,14 @@ evaluation metrics
 def evaluate(X_pred_neg, best_cf_samples, z_pred, n_timesteps, tree, maximum_distance=1):
     proxi = euclidean_distance(X_pred_neg, best_cf_samples)
     valid = validity_score(z_pred)
-    compact = compactness_score(X_pred_neg, best_cf_samples, n_timesteps=n_timesteps)
+    # compact = compactness_score(X_pred_neg, best_cf_samples, n_timesteps=n_timesteps)
     cost_mean, cost_std = cost_score(z_pred)
     
-    neigh_count = neighbour_counts_within_radius(best_cf_samples.reshape(-1, n_timesteps), tree, radius=0.3*maximum_distance)
-    dist_knn = distance_knn(best_cf_samples.reshape(-1, n_timesteps), tree) 
+    # neigh_count = neighbour_counts_within_radius(best_cf_samples.reshape(-1, n_timesteps), tree, radius=0.3*maximum_distance)
+    # dist_knn = distance_knn(best_cf_samples.reshape(-1, n_timesteps), tree) 
 
-    return proxi, valid, compact, cost_mean, cost_std, neigh_count, dist_knn
+    # return proxi, valid, compact, cost_mean, cost_std, neigh_count, dist_knn     # exclude unused metrics in the final evaluation
+    return proxi, valid, cost_mean, cost_std
 
 def euclidean_distance(X, cf_samples):
     distance = np.mean(np.linalg.norm(X - cf_samples, axis=1))
@@ -173,27 +168,30 @@ def validity_score(cf_probs, decision_prob=0.5):
 
     return valid_counts/total_counts
 
-# from: https://github.com/isaksamsten/tsexplain/blob/master/tstransform/evaluation.py
-def compactness_score(X, cf_samples, n_timesteps):
-    c = np.isclose(X, cf_samples)
+# exclude unused metrics in the final evaluation
+# originally from: https://github.com/isaksamsten/tsexplain/blob/master/tstransform/evaluation.py
+# def compactness_score(X, cf_samples, n_timesteps):
+#     c = np.isclose(X, cf_samples)
     
-    return np.mean(1 - np.sum(c, axis=1)/n_timesteps)
+#     return np.mean(1 - np.sum(c, axis=1)/n_timesteps)
 
 def cost_score(cf_probs, decision_prob=0.5):
     diff = cf_probs - decision_prob
     return np.mean(diff), np.std(diff)
 
-def neighbour_counts_within_radius(cf_samples, kdtree, radius=0.3):
-    counts = kdtree.query_radius(cf_samples, r=radius, count_only=True)
+# exclude unused metrics in the final evaluation
+# def neighbour_counts_within_radius(cf_samples, kdtree, radius=0.3):
+#     counts = kdtree.query_radius(cf_samples, r=radius, count_only=True)
     
-    return np.mean(counts)
+#     return np.mean(counts)
 
-def distance_knn(cf_samples, kdtree, k_neighbors=10, individual=False):
-    neighbor_distances = kdtree.query(cf_samples, k=k_neighbors)[0]
+# exclude unused metrics in the final evaluation
+# def distance_knn(cf_samples, kdtree, k_neighbors=10, individual=False):
+#     neighbor_distances = kdtree.query(cf_samples, k=k_neighbors)[0]
     
-    # if individual, return the mean of neighbor distances for each individual sample, else return average for all
-    res = np.mean(neighbor_distances, axis=1) if individual else np.mean(neighbor_distances)
-    return res
+#     # if individual, return the mean of neighbor distances for each individual sample, else return average for all
+#     res = np.mean(neighbor_distances, axis=1) if individual else np.mean(neighbor_distances)
+#     return res
 
 """
 counterfactual model needed
