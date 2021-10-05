@@ -24,18 +24,14 @@ power of latent space representations.
 
 Thus, we construct two instantiations for both LatentCF and LatentCF++ in our experiment: 1dCNN and LSTM. We show a detailed comparison of different components and hyperparameters for each instantiation in the following table:
 
-$$
-\begin{aligned}
-\begin{array}{ l l | l l l l } 
-\textbf{Method} & \textbf{Instantiation} & \textbf{Auto-encoder} & \textbf{Classifier} & \textbf{Optimization} & \textbf{Threshold} \\ \hline
-LatentCF++ & 1dCNN & 1dCNN-AE & 1dCNN-CLF & Adam & 0.5 \\
-& LSTM & LSTM-AE & LSTM-CLF & Adam & 0.5 \\
-& 1dCNN-C & 1dCNN-C & & Adam & 0.5 \\ \hline  
-LatentCF & 1dCNN & 1dCNN-AE & 1dCNN-CLF & Vanilla GD & No \\
-& LSTM & LSTM-AE & LSTM-CLF & Vanilla GD & No \\
-\end{array}
-\end{aligned}
-$$
+| Method | Instantiation | Auto-encoder | Classifier | Optimization | Threshold |
+| ------ | ------------- | ------------ | ---------- | ------------ | --------- | 
+| LatentCF++ | 1dCNN | 1dCNN-AE | 1dCNN-CLF | Adam | 0.5 |
+| LatentCF++ | LSTM | LSTM-AE | LSTM-CLF | Adam | 0.5 |
+| LatentCF++ | 1dCNN-C | 1dCNN-C | | Adam | 0.5 |
+| LatentCF | 1dCNN | 1dCNN-AE | 1dCNN-CLF | Vanilla GD | No |
+| LatentCF | LSTM | LSTM-AE | LSTM-CLF | Vanilla GD | No |
+
 
 ### Implementation Details 
 
