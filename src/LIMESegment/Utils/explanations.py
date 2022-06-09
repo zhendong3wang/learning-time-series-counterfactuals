@@ -3,6 +3,7 @@ from scipy import signal
 import numpy as np
 import stumpy
 from sklearn.linear_model import Ridge
+from sklearn.utils import check_random_state
 from fastdtw import fastdtw
 import random
 
@@ -91,20 +92,26 @@ def RBPIndividual(original_signal, index0, index1):
     raw_signal[index0:index1] = xrec[index0:index1]
     return raw_signal
 
-def LIMESegment(example, model, model_type='class', distance='dtw', n=100, window_size=None, cp=None, f=None):
+def LIMESegment(example, model, model_type='class', distance='dtw', n=100, window_size=None, cp=None, f=None, random_state=None):
+    random_state = check_random_state(random_state)
     if window_size is None:
         window_size =int(example.shape[0]/5)
     if cp is None:
         cp = 3
     if f is None: 
         f = int(example.shape[0]/10)
+
     cp_indexes = NNSegment(example.reshape(example.shape[0]), window_size, cp)
     segment_indexes = [0] + cp_indexes + [-1]
-    generated_samples_interpretable = [np.random.binomial(1, 0.5, len(cp_indexes)+1) for _ in range(0,n)]
+    
+    generated_samples_interpretable = [random_state.binomial(1, 0.5, len(cp_indexes)+1) for _ in range(0,n)] #Update here with random_state
     generated_samples_raw = RBP(generated_samples_interpretable, example, segment_indexes, f)
     sample_predictions = model.predict(generated_samples_raw)
+    
     if model_type == 'proba':
         y_labels = np.argmax(sample_predictions, axis=1)
+    elif isinstance(model_type, int): #Update here to use the probability of the target class
+        y_labels = sample_predictions[:, model_type]
     else:
         y_labels = sample_predictions
     
@@ -114,8 +121,10 @@ def LIMESegment(example, model, model_type='class', distance='dtw', n=100, windo
     elif distance == 'euclidean':
         distances = np.asarray([np.linalg.norm(np.ones(len(cp_indexes)+1)-x) for x in generated_samples_interpretable])
         weights = np.exp(-(np.abs(distances**2/0.75*(len(segment_indexes)**2)).reshape(n,)))
-    clf = Ridge()
+        
+    clf = Ridge(random_state=random_state) #Update here with random_state
     clf.fit(generated_samples_interpretable,y_labels, weights)
+    
     return clf.coef_, segment_indexes
 
 def background_perturb(original_signal, index0, index1, X_background):
