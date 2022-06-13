@@ -27,7 +27,7 @@ def Autoencoder(n_timesteps, n_features):
     
     return autoencoder
 
-def Classifier(n_timesteps, n_features, n_conv_layers=1, add_dense_layer=True):
+def Classifier(n_timesteps, n_features, n_conv_layers=1, add_dense_layer=True, n_output=1):
     # https://keras.io/examples/timeseries/timeseries_classification_from_scratch/
     inputs = keras.Input(shape=(n_timesteps, n_features), dtype="float32")
     
@@ -44,8 +44,11 @@ def Classifier(n_timesteps, n_features, n_conv_layers=1, add_dense_layer=True):
     x = keras.layers.MaxPooling1D(pool_size=2, padding="same")(x)
     x = keras.layers.Flatten()(x)
 
-    outputs = keras.layers.Dense(1, activation='sigmoid')(x)
-
+    if n_output>=2:
+        outputs = keras.layers.Dense(n_output, activation='softmax')(x)
+    else:
+        outputs = keras.layers.Dense(1, activation='sigmoid')(x)
+    
     classifier = keras.Model(inputs, outputs)
     classifier = keras.models.Model(inputs=inputs, outputs=outputs)
     
@@ -80,7 +83,7 @@ def AutoencoderLSTM(n_timesteps, n_features):
     
     return autoencoder2
 
-def ClassifierLSTM(n_timesteps, n_features, extra_lstm_layer=True):
+def ClassifierLSTM(n_timesteps, n_features, extra_lstm_layer=True, n_output=1):
     # Define the model structure - only LSTM layers
     # https://www.kaggle.com/szaitseff/classification-of-time-series-with-lstm-rnn
     inputs = keras.Input(shape=(n_timesteps, n_features), dtype="float32")
@@ -94,7 +97,11 @@ def ClassifierLSTM(n_timesteps, n_features, extra_lstm_layer=True):
     if extra_lstm_layer:
         x = keras.layers.LSTM(16, activation='tanh', return_sequences=False)(x)
         x = keras.layers.BatchNormalization()(x)
-    outputs = keras.layers.Dense(1, activation='sigmoid')(x)
+    
+    if n_output>=2:
+        outputs = keras.layers.Dense(n_output, activation='softmax')(x)
+    else:
+        outputs = keras.layers.Dense(1, activation='sigmoid')(x)
 
     classifier2 = keras.Model(inputs, outputs)
     

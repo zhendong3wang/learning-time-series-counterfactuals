@@ -9,7 +9,8 @@ import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.utils import resample, shuffle
 
-from _composite import ModifiedLatentCF
+# from _composite import ModifiedLatentCF
+from _guided import ModifiedLatentCF
 from _vanilla import LatentCF
 
 # from keras import backend as K
@@ -33,9 +34,11 @@ class ResultWriter:
                 "validity",
                 "margin_mean",
                 "margin_std",
+                "pred_margin_weight",
+                "step_weight_type"
             ])
         
-    def write_result(self, method_name, acc, ae_loss, best_lr, evaluate_res):
+    def write_result(self, method_name, acc, ae_loss, best_lr, evaluate_res, pred_margin_weight=1.0, step_weight_type=""):
         proxi, valid, cost_mean, cost_std= evaluate_res
         
         with open(self.file_name, 'a') as f:
@@ -49,7 +52,9 @@ class ResultWriter:
                 proxi,
                 valid,
                 cost_mean,
-                cost_std
+                cost_std,
+                pred_margin_weight,
+                step_weight_type
             ])
 
 
@@ -218,26 +223,30 @@ def find_best_alpha(autoencoder, classifier, X_samples, alpha_list=[0.001, 0.000
     
     return best_alpha, best_cf_model, best_cf_samples
 
-def find_best_lr(classifier, X_samples, autoencoder=None, encoder=None, decoder=None, lr_list=[0.001, 0.0001]):
+def find_best_lr(classifier, X_samples, autoencoder=None, encoder=None, decoder=None, lr_list=[0.001, 0.0001], pred_margin_weight=1.0, step_weight_type=None, random_state=None):
     # Find the best alpha for vanilla LatentCF
     best_cf_model, best_cf_samples, best_cf_embeddings = None, None, None
     best_losses, best_valid_frac, best_lr = 0, -1, 0
     
     for lr in lr_list:
         # Fit the LatentCF model
-        if encoder and decoder:
-            cf_model = ModifiedLatentCF(probability=0.5, only_encoder=encoder, only_decoder=decoder, optimizer=tf.optimizers.Adam(learning_rate=lr))
+        if encoder and decoder: # TODO: fix the class name here: ModifiedLatentCF or GuidedLatentCF?
+            cf_model = ModifiedLatentCF(
+                probability=0.5, only_encoder=encoder, only_decoder=decoder, optimizer=tf.optimizers.Adam(learning_rate=lr), 
+                pred_margin_weight=pred_margin_weight, step_weight_type=step_weight_type, random_state=random_state)
         else:
-            cf_model = ModifiedLatentCF(probability=0.5, autoencoder=autoencoder, optimizer=tf.optimizers.Adam(learning_rate=lr))
+            cf_model = ModifiedLatentCF(
+                probability=0.5, autoencoder=autoencoder, optimizer=tf.optimizers.Adam(learning_rate=lr), 
+                pred_margin_weight=pred_margin_weight, step_weight_type=step_weight_type, random_state=random_state)
       
         cf_model.fit(classifier)
 
         if encoder and decoder:
-            cf_embeddings, losses = cf_model.transform(X_samples)
+            cf_embeddings, losses, _ = cf_model.transform(X_samples)
             cf_samples = decoder.predict(cf_embeddings)
             z_pred = classifier.predict(cf_embeddings) # predicted probabilities of CFs
         else:
-            cf_samples, losses = cf_model.transform(X_samples)
+            cf_samples, losses, _ = cf_model.transform(X_samples)
             z_pred = classifier.predict(cf_samples) # predicted probabilities of CFs
 
         print(f'lr={lr} finished.')
