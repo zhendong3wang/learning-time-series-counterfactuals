@@ -267,6 +267,7 @@ def find_best_lr(
     best_losses, best_valid_frac, best_lr = 0, -1, 0
 
     for lr in lr_list:
+        print(f"======================== CF search started, with lr={lr}.")
         # Fit the LatentCF model
         # TODO: fix the class name here: ModifiedLatentCF or GuidedLatentCF? from _guided or _composite?
         if encoder and decoder:
@@ -295,15 +296,23 @@ def find_best_lr(
             cf_embeddings, losses, _ = cf_model.transform(X_samples)
             cf_samples = decoder.predict(cf_embeddings)
             # predicted probabilities of CFs
-            z_pred = classifier.predict(cf_embeddings)
+            z_pred = classifier.predict(cf_embeddings)[:, 1]
         else:
             cf_samples, losses, _ = cf_model.transform(X_samples)
             # predicted probabilities of CFs
-            z_pred = classifier.predict(cf_samples)
+            z_pred = classifier.predict(cf_samples)[:, 1]
 
-        print(f"lr={lr} finished.")
         valid_frac = validity_score(z_pred)
+        proxi_score = euclidean_distance(X_samples, cf_samples)
+        proxi_score, valid_frac, cost_mean, cost_std = evaluate(
+            X_samples, cf_samples, z_pred, _
+        )
+        # uncomment for debugging
+        print(
+            f"lr={lr} finished. Validity: {valid_frac}, proximity (with padding): {proxi_score}, margin difference: {cost_mean,cost_std}."
+        )
 
+        # if valid_frac >= best_valid_frac and proxi_score <= best_proxi_score:
         if valid_frac >= best_valid_frac:
             best_cf_model, best_cf_samples = cf_model, cf_samples
             best_losses, best_lr, best_valid_frac = losses, lr, valid_frac

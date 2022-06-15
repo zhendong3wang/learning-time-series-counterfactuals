@@ -121,10 +121,7 @@ class ModifiedLatentCF:
     # additional input of step_weights
     def compute_loss(self, original_sample, z_search, step_weights):
         loss = tf.zeros(shape=())
-        if self.autoencoder is not None:
-            decoded = self.decoder_(z_search)
-        else:
-            decoded = z_search
+        decoded = self.decoder_(z_search) if self.autoencoder is not None else z_search
         pred = self.model_(decoded)
 
         pred_margin_loss = self.pred_margin_mse(pred)
@@ -156,9 +153,11 @@ class ModifiedLatentCF:
                 print(f"{i} samples been transformed.")
 
             if self.step_weight_type == "local":
-                # ignore warning of matrix multiplication: `https://stackoverflow.com/questions/29688168/mean-nanmean-and-warning-mean-of-empty-slice`
+                # ignore warning of matrix multiplication, from LIMESegment: `https://stackoverflow.com/questions/29688168/mean-nanmean-and-warning-mean-of-empty-slice`
+                # ignore warning of scipy package warning, from LIMESegment: `https://github.com/paulvangentcom/heartrate_analysis_python/issues/31`
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)
+                    warnings.simplefilter("ignore", category=UserWarning)
                     step_weights = get_local_weights(
                         x[i], self.model_, random_state=self.random_state
                     )
@@ -193,14 +192,20 @@ class ModifiedLatentCF:
                 x, z, step_weights
             )
 
-        pred = (
-            self.model_(self.decoder_(z))
-            if self.autoencoder is not None
-            else self.model_(z)
-        )
+        if self.autoencoder is not None:
+            pred = self.model_(self.decoder_(z))
+        else:
+            pred = self.model_(z)
+
+        # # uncomment for debug
+        # print(
+        #     f"current loss: {loss}, pred_margin_loss: {pred_margin_loss}, weighted_steps_loss: {weighted_steps_loss}, pred prob:{pred}, iter: {it}."
+        # )
 
         # TODO: modify the loss to check both validity and proximity; how to design the condition here?
-        # while (pred_margin_loss > self.tolerance_ or pred[:, 1] < self.probability_ or weighted_steps_loss > 0.001)
+        # while (pred_margin_loss > self.tolerance_ or pred[:, 1] < self.probability_ or weighted_steps_loss > self.step_tolerance_)?
+        # loss > tf.multiply(self.tolerance_rate_, loss_original)
+        #
         while (
             pred_margin_loss > self.tolerance_ or pred[:, 1] < self.probability_
         ) and (it < self.max_iter if self.max_iter else True):
@@ -215,12 +220,15 @@ class ModifiedLatentCF:
                 )
             it += 1
 
-            pred = (
-                self.model_(self.decoder_(z))
-                if self.autoencoder is not None
-                else self.model_(z)
-            )
-            # print(f'current pred_margin_loss: {pred_margin_loss}, weighted_steps_loss: {weighted_steps_loss}, pred prob:{pred}, iter: {it}.')
+            if self.autoencoder is not None:
+                pred = self.model_(self.decoder_(z))
+            else:
+                pred = self.model_(z)
+
+        # # uncomment for debug
+        # print(
+        #     f"current loss: {loss}, pred_margin_loss: {pred_margin_loss}, weighted_steps_loss: {weighted_steps_loss}, pred prob:{pred}, iter: {it}. \n"
+        # )
 
         res = z.numpy() if self.autoencoder is None else self.decoder_(z).numpy()
         return res, float(loss)

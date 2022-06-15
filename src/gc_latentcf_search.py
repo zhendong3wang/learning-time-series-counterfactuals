@@ -7,10 +7,8 @@ from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from scipy.spatial import distance_matrix
-from sklearn.metrics import balanced_accuracy_score
+from sklearn.metrics import balanced_accuracy_score, confusion_matrix
 from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KDTree
 from tensorflow import keras
 from tensorflow.keras.utils import to_categorical
 from wildboar.datasets import load_dataset
@@ -94,6 +92,8 @@ def main():
         logger.info(
             f"Data upsampling performed, current distribution of y: \n{pd.value_counts(y_train)}."
         )
+    else:
+        logger.info(f"Current distribution of y: \n{pd.value_counts(y_train)}.")
 
     y_train_classes = y_train.copy()
     y_test_classes = y_test.copy()
@@ -159,6 +159,13 @@ def main():
     acc = balanced_accuracy_score(y_true=y_test_classes, y_pred=y_pred_classes)
     logger.info(f"LSTM-FCN classifier trained, with validation accuracy {acc}.")
 
+    confusion_matrix_df = pd.DataFrame(
+        confusion_matrix(y_true=y_test_classes, y_pred=y_pred_classes, labels=[1, 0]),
+        index=["True:pos", "True:neg"],
+        columns=["Pred:pos", "Pred:neg"],
+    )
+    logger.info(f"Confusion matrix: \n{confusion_matrix_df}.")
+
     ###############################################
     # ## 2.1 CF search with 1dCNN autoencoder
     ###############################################
@@ -197,8 +204,8 @@ def main():
             classifier,
             X_pred_neg,
             autoencoder=autoencoder,
-            # lr_list=[0.001, 0.0001],
-            lr_list=[0.0001],
+            lr_list=[0.001, 0.0001],
+            # lr_list=[0.0001],
             pred_margin_weight=pred_margin_weight,
             step_weight_type="local",
             random_state=RANDOM_STATE,
@@ -270,8 +277,8 @@ def main():
             classifier,
             X_pred_neg,
             autoencoder=autoencoder2,
-            # lr_list=[0.001, 0.0001],
-            lr_list=[0.0001],
+            lr_list=[0.001, 0.0001],
+            # lr_list=[0.0001],
             pred_margin_weight=pred_margin_weight,
             step_weight_type="local",
             random_state=RANDOM_STATE,
@@ -317,8 +324,8 @@ def main():
             classifier,
             X_pred_neg,
             autoencoder=None,
-            # lr_list=[0.001, 0.0001],
-            lr_list=[0.0001],
+            lr_list=[0.001, 0.0001],
+            # lr_list=[0.0001],
             pred_margin_weight=pred_margin_weight,
             step_weight_type="local",
             random_state=RANDOM_STATE,
@@ -332,9 +339,13 @@ def main():
             # remove extra paddings after counterfactual generation
             best_cf_samples3 = best_cf_samples3[:, :-padding_size, :]
             # use the unpadded X for evaluation
-            X_pred_neg3 = X_test_processed[y_pred_classes == neg_label]
+            X_pred_neg_orignal = X_test_processed[y_pred_classes == neg_label]
+        else:
+            X_pred_neg_orignal = X_pred_neg
 
-        evaluate_res3 = evaluate(X_pred_neg3, best_cf_samples3, z_pred3, n_timesteps)
+        evaluate_res3 = evaluate(
+            X_pred_neg_orignal, best_cf_samples3, z_pred3, n_timesteps
+        )
 
         result_writer.write_result(
             "No autoencoder",
