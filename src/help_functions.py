@@ -259,7 +259,7 @@ def find_best_lr(
     decoder=None,
     lr_list=[0.001, 0.0001],
     pred_margin_weight=1.0,
-    step_weight_type=None,
+    step_weights=None,
     random_state=None,
 ):
     # Find the best alpha for vanilla LatentCF
@@ -277,7 +277,7 @@ def find_best_lr(
                 only_decoder=decoder,
                 optimizer=tf.optimizers.Adam(learning_rate=lr),
                 pred_margin_weight=pred_margin_weight,
-                step_weight_type=step_weight_type,
+                step_weights=step_weights,
                 random_state=random_state,
             )
         else:
@@ -286,7 +286,7 @@ def find_best_lr(
                 autoencoder=autoencoder,
                 optimizer=tf.optimizers.Adam(learning_rate=lr),
                 pred_margin_weight=pred_margin_weight,
-                step_weight_type=step_weight_type,
+                step_weights=step_weights,
                 random_state=random_state,
             )
 

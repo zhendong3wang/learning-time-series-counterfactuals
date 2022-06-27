@@ -4,6 +4,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 
+from wildboar.explain import IntervalImportance
 from LIMESegment.Utils.explanations import LIMESegment
 
 
@@ -27,7 +28,7 @@ class ModifiedLatentCF:
         optimizer=None,
         autoencoder=None,
         pred_margin_weight=1.0,  # weighted_steps_weight = 1 - pred_margin_weight
-        step_weight_type="local",
+        step_weights="local",
         random_state=None,
     ):
         """
@@ -65,8 +66,7 @@ class ModifiedLatentCF:
         self.pred_margin_weight = pred_margin_weight
         self.weighted_steps_weight = 1 - self.pred_margin_weight
 
-        self.step_weight_type = step_weight_type
-        #         self.step_weights_global = get_global_weights() if self.step_weight_type=='global' #TODO: add global weights function
+        self.step_weights = step_weights
         self.random_state = random_state
 
     def fit(self, model):
@@ -152,7 +152,12 @@ class ModifiedLatentCF:
             if i % 50 == 0:
                 print(f"{i} samples been transformed.")
 
-            if self.step_weight_type == "local":
+            # if self.step_weights == "global" OR "uniform"
+            if isinstance(self.step_weights, np.ndarray):  #  "global" OR "uniform"
+                step_weights = self.step_weights
+            # elif self.step_weight_type == "uniform":
+            #     step_weights = np.ones((1, x.shape[1], x.shape[2]))
+            elif self.step_weights == "local":
                 # ignore warning of matrix multiplication, from LIMESegment: `https://stackoverflow.com/questions/29688168/mean-nanmean-and-warning-mean-of-empty-slice`
                 # ignore warning of scipy package warning, from LIMESegment: `https://github.com/paulvangentcom/heartrate_analysis_python/issues/31`
                 with warnings.catch_warnings():
@@ -161,11 +166,12 @@ class ModifiedLatentCF:
                     step_weights = get_local_weights(
                         x[i], self.model_, random_state=self.random_state
                     )
-            elif self.step_weight_type == "global":
-                step_weights = self.step_weights_global
             else:
-                step_weights = np.ones((1, x.shape[1], x.shape[2]))
+                raise NotImplementedError(
+                    "step_weights not implemented, please choose 'local', 'global' or 'uniform'."
+                )
 
+            # print(step_weights.reshape(-1))
             x_sample, loss = self._transform_sample(x[np.newaxis, i], step_weights)
 
             result_samples[i] = x_sample
@@ -254,7 +260,7 @@ def extract_encoder_decoder(autoencoder):
 
 
 def get_local_weights(input_sample, classifier_model, random_state=None):
-    n_timestep, n_dims = input_sample.shape  # n_dims=1
+    n_timesteps, n_dims = input_sample.shape  # n_dims=1
     seg_imp, seg_idx = LIMESegment(
         input_sample,
         classifier_model,
@@ -268,10 +274,45 @@ def get_local_weights(input_sample, classifier_model, random_state=None):
     masking_threshold = np.percentile(seg_imp, 25)
     masking_idx = np.where(seg_imp <= masking_threshold)
 
-    weighted_steps = np.ones(n_timestep)
+    weighted_steps = np.ones(n_timesteps)
     for start_idx in masking_idx[0]:
         weighted_steps[seg_idx[start_idx] : seg_idx[start_idx + 1]] = 0
 
     # need to reshape for multiplication in `tf.math.multiply()`
-    weighted_steps = weighted_steps.reshape(1, n_timestep, n_dims)
+    weighted_steps = weighted_steps.reshape(1, n_timesteps, n_dims)
+    return weighted_steps
+
+
+def get_global_weights(
+    input_samples, input_labels, classifier_model, random_state=None
+):
+    n_samples, n_timesteps, n_dims = input_samples.shape  # n_dims=1
+
+    class ModelWrapper:
+        def __init__(self, model):
+            self.model = model
+
+        def predict(self, X):
+            p = self.model.predict(X.reshape(n_samples, n_timesteps, 1))
+            return np.argmax(p, axis=1)
+
+        def fit(self, X, y):
+            return self.model.fit(X, y)
+
+    clf = ModelWrapper(classifier_model)
+
+    i = IntervalImportance(scoring="accuracy", n_interval=10, random_state=random_state)
+    i.fit(clf, input_samples.reshape(input_samples.shape[0], -1), input_labels)
+
+    # calculate the threshold of masking, 75 percentile
+    masking_threshold = np.percentile(i.importances_.mean, 75)
+    masking_idx = np.where(i.importances_.mean >= masking_threshold)
+
+    weighted_steps = np.ones(n_timesteps)
+    seg_idx = i.intervals_
+    for start_idx in masking_idx[0]:
+        weighted_steps[seg_idx[start_idx][0] : seg_idx[start_idx][1]] = 0
+
+    # need to reshape for multiplication in `tf.math.multiply()`
+    weighted_steps = weighted_steps.reshape(1, n_timesteps, 1)
     return weighted_steps

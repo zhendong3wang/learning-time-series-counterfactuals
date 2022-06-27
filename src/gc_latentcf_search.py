@@ -23,6 +23,7 @@ from help_functions import (
     upsample_minority,
 )
 from keras_models import *
+from _guided import get_global_weights
 
 os.environ["TF_DETERMINISTIC_OPS"] = "1"
 config = tf.compat.v1.ConfigProto()
@@ -54,15 +55,32 @@ def main():
         default=8,
         help="Boolean flag of using (relatively) shallower CNN model, default False.",
     )
+    parser.add_argument(
+        "--lr-list",
+        nargs="+",
+        type=float,
+        required=False,
+        default=[None, None, None],
+        help="Learning rates for each CF search model, if None then automatically search between [0.001, 0.0001]",
+    )
+    parser.add_argument(
+        "--w-type",
+        type=str,
+        default="local",
+        help="Local, global, OR uniform.",
+    )
     A = parser.parse_args()
 
     logger = logging.getLogger(__name__)
     logger.info(f"Num GPUs Available: {len(tf.config.list_physical_devices('GPU'))}.")
     numba_logger = logging.getLogger("numba")
     numba_logger.setLevel(logging.WARNING)
+    logger.info(f"LR list: {A.lr_list}.")  # for debugging
+    logger.info(f"W Type: {A.w_type}.")  # for debugging
 
     RANDOM_STATE = 39
-    PRED_MARGIN_W_LIST = [1.0, 0.5]
+    # PRED_MARGIN_W_LIST = [1.0, 0.5]
+    PRED_MARGIN_W_LIST = [0.5]
 
     result_writer = ResultWriter(file_name=A.output, dataset_name=A.dataset)
     logger.info(f"Result writer is ready, writing to {A.output}...")
@@ -195,19 +213,35 @@ def main():
     ae_val_loss = np.min(autoencoder_history.history["val_loss"])
     logger.info(f"1dCNN autoencoder trained, with validation loss: {ae_val_loss}.")
 
+    if A.w_type == "global":
+        step_weights = get_global_weights(
+            X_train_processed_padded,
+            y_train_classes,
+            classifier,
+            random_state=RANDOM_STATE,
+        )
+    elif A.w_type == "uniform":
+        step_weights = np.ones((1, n_timesteps_padded, n_features))
+    elif A.w_type.lower() == "local":
+        step_weights = "local"
+    else:
+        raise NotImplementedError(
+            "A.w_type not implemented, please choose 'local', 'global' or 'uniform'."
+        )
+
     ### Evaluation metrics
     for pred_margin_weight in PRED_MARGIN_W_LIST:
         # Get these instances of negative predictions, which is class abnormal (0); (normal is class 1)
         X_pred_neg = X_test_processed_padded[y_pred_classes == neg_label]
 
+        lr_list = [A.lr_list[0]] if A.lr_list[0] is not None else [0.001, 0.0001]
         best_lr, best_cf_model, best_cf_samples, _ = find_best_lr(
             classifier,
             X_pred_neg,
             autoencoder=autoencoder,
-            lr_list=[0.001, 0.0001],
-            # lr_list=[0.0001],
+            lr_list=lr_list,
             pred_margin_weight=pred_margin_weight,
-            step_weight_type="local",
+            step_weights=step_weights,
             random_state=RANDOM_STATE,
         )
         logger.info(f"The best learning rate found is {best_lr}.")
@@ -233,7 +267,7 @@ def main():
             best_lr,
             evaluate_res,
             pred_margin_weight=pred_margin_weight,
-            step_weight_type="local",
+            step_weight_type=A.w_type.lower(),
         )
         logger.info(
             f"Done for CF search [1dCNN autoencoder], pred_margin_weight={pred_margin_weight}."
@@ -273,14 +307,14 @@ def main():
         # Get these instances of negative predictions
         X_pred_neg = X_test_processed_padded[y_pred_classes == neg_label]
 
+        lr_list2 = [A.lr_list[1]] if A.lr_list[1] is not None else [0.001, 0.0001]
         best_lr2, best_cf_model2, best_cf_samples2, _ = find_best_lr(
             classifier,
             X_pred_neg,
             autoencoder=autoencoder2,
-            lr_list=[0.001, 0.0001],
-            # lr_list=[0.0001],
+            lr_list=lr_list2,
             pred_margin_weight=pred_margin_weight,
-            step_weight_type="local",
+            step_weights=step_weights,
             random_state=RANDOM_STATE,
         )
         logger.info(f"The best learning rate found is {best_lr2}.")
@@ -307,7 +341,7 @@ def main():
             best_lr2,
             evaluate_res2,
             pred_margin_weight=pred_margin_weight,
-            step_weight_type="local",
+            step_weight_type=A.w_type.lower(),
         )
         logger.info(
             f"Done for CF search [LSTM autoencoder], pred_margin_weight={pred_margin_weight}."
@@ -320,14 +354,14 @@ def main():
         # Get these instances of negative predictions, which is class abnormal (0); (normal is class 1)
         X_pred_neg = X_test_processed_padded[y_pred_classes == neg_label]
 
+        lr_list3 = [A.lr_list[2]] if A.lr_list[2] is not None else [0.001, 0.0001]
         best_lr3, best_cf_model3, best_cf_samples3, _ = find_best_lr(
             classifier,
             X_pred_neg,
             autoencoder=None,
-            lr_list=[0.001, 0.0001],
-            # lr_list=[0.0001],
+            lr_list=lr_list3,
             pred_margin_weight=pred_margin_weight,
-            step_weight_type="local",
+            step_weights=step_weights,
             random_state=RANDOM_STATE,
         )
         logger.info(f"The best learning rate found is {best_lr3}.")
@@ -354,7 +388,7 @@ def main():
             best_lr3,
             evaluate_res3,
             pred_margin_weight=pred_margin_weight,
-            step_weight_type="local",
+            step_weight_type=A.w_type.lower(),
         )
         logger.info(
             f"Done for CF search [No autoencoder], pred_margin_weight={pred_margin_weight}."
