@@ -79,8 +79,9 @@ def main():
     logger.info(f"W Type: {A.w_type}.")  # for debugging
 
     RANDOM_STATE = 39
-    # PRED_MARGIN_W_LIST = [1.0, 0.5]
+    # PRED_MARGIN_W_LIST = [1.0] # uncomment when unconstrained verision
     PRED_MARGIN_W_LIST = [0.5]
+    # PRED_MARGIN_W_LIST = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0] # uncomment when ablation study
 
     result_writer = ResultWriter(file_name=A.output, dataset_name=A.dataset)
     logger.info(f"Result writer is ready, writing to {A.output}...")
@@ -231,6 +232,8 @@ def main():
 
     ### Evaluation metrics
     for pred_margin_weight in PRED_MARGIN_W_LIST:
+        logger.info(f"The current prediction margin weight is {pred_margin_weight}.")
+
         # Get these instances of negative predictions, which is class abnormal (0); (normal is class 1)
         X_pred_neg = X_test_processed_padded[y_pred_classes == neg_label]
 
@@ -304,6 +307,8 @@ def main():
     logger.info(f"LSTM autoencoder trained, with validation loss: {ae_val_loss2}.")
 
     for pred_margin_weight in PRED_MARGIN_W_LIST:
+        logger.info(f"The current prediction margin weight is {pred_margin_weight}.")
+
         # Get these instances of negative predictions
         X_pred_neg = X_test_processed_padded[y_pred_classes == neg_label]
 
@@ -351,6 +356,8 @@ def main():
     # ## 2.3 CF search with no autoencoder
     ###############################################
     for pred_margin_weight in PRED_MARGIN_W_LIST:
+        logger.info(f"The current prediction margin weight is {pred_margin_weight}.")
+
         # Get these instances of negative predictions, which is class abnormal (0); (normal is class 1)
         X_pred_neg = X_test_processed_padded[y_pred_classes == neg_label]
 
