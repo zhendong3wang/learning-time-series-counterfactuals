@@ -8,9 +8,9 @@ class ModifiedLatentCF:
 
     References
     ----------
-    Latent-CF: A Simple Baseline for Reverse Counterfactual Explanation
-        Rachana Balasubramanian and Samuel Sharpe and Brian Barr and Jason Wittenbach and C. Bayan Brus
-        In Proceedings of the Conference on Neural Information Processing Systems, 2020
+    Learning Time Series Counterfactuals via Latent Space Representations, 
+    Wang, Z., Samsten, I., Mochaourab, R., Papapetrou, P., 2021. 
+    in: International Conference on Discovery Science, pp. 369–384. https://doi.org/10.1007/978-3-030-88942-5_29
     """
 
     def __init__(    
