@@ -94,9 +94,9 @@ class ModifiedLatentCF:
         return self
 
     def predict(self, x):
-        """Compute the differnece beteween the desired and actual probability
+        """Compute the difference between the desired and actual probability
 
-        Paramters
+        Parameters
         ---------
         x : Variable
             Variable of the sample
@@ -118,6 +118,20 @@ class ModifiedLatentCF:
             tf.math.multiply(tf.math.abs(original_sample - cf_sample), step_weights)
         )
 
+    # An auxiliary normalized L2 loss function to measure the proximity with step_weights
+    def weighted_normalized_l2(self, original_sample, cf_sample, step_weights):
+        var_diff = tf.math.reduce_variance(original_sample - cf_sample)
+        var_orig = tf.math.reduce_variance(original_sample)
+        var_cf = tf.math.reduce_variance(cf_sample)
+
+        normalized_l2 = 0.5 * var_diff / (var_orig + var_cf)
+        return tf.math.reduce_mean(
+            tf.math.multiply(
+                normalized_l2,
+                step_weights,
+            )
+        )
+
     # additional input of step_weights
     def compute_loss(self, original_sample, z_search, step_weights):
         loss = tf.zeros(shape=())
@@ -128,8 +142,15 @@ class ModifiedLatentCF:
         loss += self.pred_margin_weight * pred_margin_loss
 
         weighted_steps_loss = self.weighted_mae(
-            original_sample, decoded, step_weights=tf.cast(step_weights, tf.float32)
+            original_sample=tf.cast(original_sample, dtype=tf.float32),
+            cf_sample=tf.cast(decoded, dtype=tf.float32),
+            step_weights=tf.cast(step_weights, tf.float32),
         )
+        # weighted_steps_loss = self.weighted_normalized_l2(
+        #     original_sample=tf.cast(original_sample, dtype=tf.float32), 
+        #     decoded=tf.cast(decoded, dtype=tf.float32), 
+        #     step_weights=tf.cast(step_weights, tf.float32)
+        # )
         loss += self.weighted_steps_weight * weighted_steps_loss
 
         return loss, pred_margin_loss, weighted_steps_loss
@@ -177,6 +198,8 @@ class ModifiedLatentCF:
             result_samples[i] = x_sample
             losses[i] = loss
             weights_all[i] = step_weights
+
+        print(f"{i} samples been transformed, in total.")
 
         return result_samples, losses, weights_all
 

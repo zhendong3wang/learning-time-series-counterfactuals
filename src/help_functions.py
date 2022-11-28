@@ -28,12 +28,16 @@ class ResultWriter:
             writer.writerow(
                 [
                     "dataset",
+                    "fold_id",
                     "method",
                     "classifier_accuracy",
                     "autoencoder_loss",
                     "best_lr",
                     "proximity",
                     "validity",
+                    "lof_score",
+                    "relative_proximity",
+                    "compactness",
                     "margin_mean",
                     "margin_std",
                     "pred_margin_weight",
@@ -43,6 +47,7 @@ class ResultWriter:
 
     def write_result(
         self,
+        fold_id,
         method_name,
         acc,
         ae_loss,
@@ -51,19 +56,31 @@ class ResultWriter:
         pred_margin_weight=1.0,
         step_weight_type="",
     ):
-        proxi, valid, cost_mean, cost_std = evaluate_res
+        (
+            proxi,
+            valid,
+            lof_score,
+            relative_proximity,
+            compactness,
+            cost_mean,
+            cost_std,
+        ) = evaluate_res
 
         with open(self.file_name, "a") as f:
             writer = csv.writer(f)
             writer.writerow(
                 [
                     self.dataset_name,
+                    fold_id,
                     method_name,
                     acc,
                     ae_loss,
                     best_lr,
                     proxi,
                     valid,
+                    lof_score,
+                    relative_proximity,
+                    compactness,
                     cost_mean,
                     cost_std,
                     pred_margin_weight,
@@ -123,9 +140,16 @@ def conditional_pad(X):
     return X, 0  # padding size = 0
 
 
+def remove_paddings(cf_samples, padding_size):
+    if padding_size != 0:
+        # use np.squeeze() to cut the last time-series dimension, for evaluation
+        cf_samples = np.squeeze(cf_samples[:, :-padding_size, :])
+    else:
+        cf_samples = np.squeeze(cf_samples)
+    return cf_samples
+
+
 # Upsampling the minority class
-
-
 def upsample_minority(X, y, pos_label=1, neg_label=0, random_state=39):
     # Get counts
     pos_counts = pd.value_counts(y)[pos_label]
@@ -167,8 +191,6 @@ def upsample_minority(X, y, pos_label=1, neg_label=0, random_state=39):
 deep models needed
 """
 # Method: For plotting the accuracy/loss of keras models
-
-
 def plot_graphs(history, string):
     plt.plot(history.history[string])
     plt.plot(history.history["val_" + string])
@@ -179,8 +201,6 @@ def plot_graphs(history, string):
 
 
 # Method: Fix the random seeds to get consistent models
-
-
 def reset_seeds(seed_value=39):
     # ref: https://keras.io/getting_started/faq/#how-can-i-obtain-reproducible-results-using-keras-during-development
     os.environ["PYTHONHASHSEED"] = str(seed_value)
@@ -197,18 +217,24 @@ evaluation metrics
 """
 
 
-def evaluate(X_pred_neg, best_cf_samples, z_pred, n_timesteps):
-    proxi = euclidean_distance(X_pred_neg, best_cf_samples)
+def evaluate(X_pred_neg, cf_samples, z_pred, n_timesteps, lof_estimator, nn_estimator):
+    proxi = euclidean_distance(X_pred_neg, cf_samples)
     valid = validity_score(z_pred)
-    # compact = compactness_score(X_pred_neg, best_cf_samples, n_timesteps=n_timesteps)
+    compact = compactness_score(X_pred_neg, cf_samples, n_timesteps=n_timesteps)
     cost_mean, cost_std = cost_score(z_pred)
+    # TODO: add LOF and RP score for debugging training?
+    if (lof_estimator is not None) and (nn_estimator is not None):
+        lof_score = calculate_lof(cf_samples, lof_estimator)
+        rp_score = relative_proximity(X_pred_neg, cf_samples, nn_estimator)
 
-    return proxi, valid, cost_mean, cost_std
+        return proxi, valid, lof_score, rp_score, compact, cost_mean, cost_std
+
+    return proxi, valid, 0, 0, compact, cost_mean, cost_std
 
 
-def euclidean_distance(X, cf_samples):
-    distance = np.mean(np.linalg.norm(X - cf_samples, axis=1))
-    return distance
+def euclidean_distance(X, cf_samples, average=True):
+    paired_distances = np.linalg.norm(X - cf_samples, axis=1)
+    return np.mean(paired_distances) if average else paired_distances
 
 
 def validity_score(cf_probs, decision_prob=0.5):
@@ -220,6 +246,37 @@ def validity_score(cf_probs, decision_prob=0.5):
 def cost_score(cf_probs, decision_prob=0.5):
     diff = cf_probs - decision_prob
     return np.mean(diff), np.std(diff)
+
+
+# originally from: https://github.com/isaksamsten/wildboar/blob/859758884677ba32a601c53a5e2b9203a644aa9c/src/wildboar/metrics/_counterfactual.py#L279
+def compactness_score(X, cf_samples, n_timesteps):
+    # absolute tolerance atol=0.001, OR 0.0001?
+    c = np.isclose(X, cf_samples, atol=0.001)
+
+    return np.mean(1 - np.sum(c, axis=1) / n_timesteps)
+
+
+def calculate_lof(cf_samples, lof_estimator):
+    y_pred_cf = lof_estimator.predict(cf_samples)
+    n_error_cf = y_pred_cf[y_pred_cf == -1].size
+    lof_score = n_error_cf / y_pred_cf.shape[0]
+    return lof_score
+
+
+def relative_proximity(X_pred_neg, cf_samples, nn_estimator):
+    nn_distances, closest_idx = nn_estimator.kneighbors(
+        X_pred_neg, return_distance=True
+    )
+    proximity = euclidean_distance(X_pred_neg, cf_samples)
+
+    # nn_samples = X_target_label[closest_idx[:, 0]]
+    # nn_distances = euclidean_distance(X_pred_neg, nn_samples)
+
+    # TODO: paired proximity score for (X_pred_neg, cf_samples), if not average (?)
+    # relative_proximity = proximity / nn_distances.mean() 
+    relative_proximity = proximity / nn_distances.mean()
+
+    return relative_proximity
 
 
 """
@@ -261,6 +318,7 @@ def find_best_lr(
     pred_margin_weight=1.0,
     step_weights=None,
     random_state=None,
+    padding_size=0,
 ):
     # Find the best alpha for vanilla LatentCF
     best_cf_model, best_cf_samples, best_cf_embeddings = None, None, None
@@ -303,14 +361,23 @@ def find_best_lr(
             z_pred = classifier.predict(cf_samples)[:, 1]
 
         valid_frac = validity_score(z_pred)
-        proxi_score = euclidean_distance(X_samples, cf_samples)
-        proxi_score, valid_frac, cost_mean, cost_std = evaluate(
-            X_samples, cf_samples, z_pred, _
+        proxi_score = euclidean_distance(
+            remove_paddings(X_samples, padding_size),
+            remove_paddings(cf_samples, padding_size),
         )
-        # uncomment for debugging
-        print(
-            f"lr={lr} finished. Validity: {valid_frac}, proximity (with padding): {proxi_score}, margin difference: {cost_mean,cost_std}."
-        )
+
+        # # uncomment for debugging
+        # print(f"lr={lr} finished. Validity: {valid_frac}, proximity: {proxi_score}.")
+
+        # TODO: fix (padding) dimensions of `lof_estimator` and `nn_estimator` during training, for debugging
+        # proxi_score, valid_frac, lof_score, rp_score, cost_mean, cost_std = evaluate(
+        #     X_pred_neg=X_samples,
+        #     cf_samples=cf_samples,
+        #     z_pred=z_pred,
+        #     n_timesteps=_,
+        #     lof_estimator=lof_estimator,
+        #     nn_estimator=nn_estimator,
+        # )
 
         # if valid_frac >= best_valid_frac and proxi_score <= best_proxi_score:
         if valid_frac >= best_valid_frac:
