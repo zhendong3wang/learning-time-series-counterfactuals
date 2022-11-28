@@ -1,6 +1,8 @@
 #!/bin/bash
 # datasets with size larger than 1000
-python notebooks/latentcf-search.py --dataset TwoLeadECG --pos 1 --neg 2 --output twoleadecg-outfile.csv --shallow-cnn 
+python notebooks/latentcf-search.py --dataset Yoga --pos 1 --neg 2 --output yoga-outfile.csv;
+
+python notebooks/latentcf-search.py --dataset TwoLeadECG --pos 1 --neg 2 --output twoleadecg-outfile.csv --shallow-cnn;
 
 python notebooks/latentcf-search.py --dataset ItalyPowerDemand --pos 1 --neg 2 --output italypower-outfile.csv --shallow-cnn; 
 
