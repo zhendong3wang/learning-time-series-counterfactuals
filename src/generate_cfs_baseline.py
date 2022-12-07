@@ -9,17 +9,22 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix
-from sklearn.model_selection import StratifiedKFold
-from sklearn.neighbors import (KNeighborsClassifier, LocalOutlierFactor,
-                               NearestNeighbors)
+from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.neighbors import KNeighborsClassifier, NearestNeighbors
 from tensorflow import keras
 from tensorflow.keras.utils import to_categorical
 from wildboar.datasets import load_dataset
 from wildboar.ensemble import ShapeletForestClassifier
 from wildboar.explain.counterfactual import counterfactuals
 
-from help_functions import (ResultWriter, evaluate, reset_seeds,
-                            time_series_normalize, upsample_minority)
+from help_functions import (
+    ResultWriter,
+    evaluate,
+    reset_seeds,
+    time_series_normalize,
+    upsample_minority,
+    fit_evaluation_models,
+)
 from keras_models import *
 
 os.environ["TF_DETERMINISTIC_OPS"] = "1"
@@ -73,9 +78,25 @@ def main():
     for train_index, test_index in skf.split(X, y_copy):
         X_train, X_test = X[train_index], X[test_index]
         y_train, y_test = y_copy[train_index], y_copy[test_index]
-        
+
+        # Get 50 samples for CF evaluation if test size larger than 50
+        test_size = len(y_test)
+        if test_size >= 50:
+            test_indices = np.arange(test_size)
+            _, _, _, rand_test_idx = train_test_split(
+                y_test,
+                test_indices,
+                test_size=50,
+                random_state=RANDOM_STATE,
+                stratify=y_test,
+            )
+        else:
+            rand_test_idx = np.arange(test_size)
+
         fold_idx += 1
-        logger.info(f"Current CV fold: [{fold_idx}], with X_train | X_test: {X_train.shape} | {X_test.shape}.")
+        logger.info(
+            f"Current CV fold: [{fold_idx}], with `X_train` & `X_test` shape: {X_train.shape} | {X_test.shape}."
+        )
 
         # Upsample the minority class
         y_train_copy = y_train.copy()
@@ -84,7 +105,7 @@ def main():
         )
         if y_train.shape != y_train_copy.shape:
             logger.info(
-                f"Data upsampling performed, current distribution of y: \n{pd.value_counts(y_train)}."
+                f"Data upsampling performed, current distribution of y_train: \n{pd.value_counts(y_train)}."
             )
         else:
             logger.info(f"Current distribution of y: \n{pd.value_counts(y_train)}.")
@@ -115,24 +136,19 @@ def main():
         )
 
         # ### 1.2 Evaluation models
-        # Fit the LOF model for novelty detection (novelty=True)
-        lof_estimator = LocalOutlierFactor(
-            n_neighbors=int(np.cbrt(X_train.shape[0])),
-            novelty=True,
-            metric="euclidean",
+        n_neighbors_lof = int(np.cbrt(X_train_processed.shape[0]))
+        lof_estimator_pos, nn_model_pos = fit_evaluation_models(
+            n_neighbors_lof=n_neighbors_lof,
+            n_neighbors_nn=1,
+            training_data=np.squeeze(X_train_processed[y_train_classes == pos_label]),
         )
-        # Use normalized training data for LOF and NN models
-        X_target_label = np.squeeze(X_train_processed[y_train_classes == pos_label])
-        lof_estimator.fit(X_target_label)  # use the target class to train LOF
-        logger.info(
-            f"LOF estimator trained for dataset: [[{A.dataset}]], fold-ID: {fold_idx}."
+        lof_estimator_neg, nn_model_neg = fit_evaluation_models(
+            n_neighbors_lof=n_neighbors_lof,
+            n_neighbors_nn=1,
+            training_data=np.squeeze(X_train_processed[y_train_classes == neg_label]),
         )
-
-        # Fit an unsupervised 1NN with all the positive training samples
-        nn_model = NearestNeighbors(n_neighbors=1, metric="euclidean")
-        nn_model.fit(X_target_label)
         logger.info(
-            f"NN estimator trained for  dataset: [[{A.dataset}]], fold-ID: {fold_idx}."
+            f"LOF and NN estimators trained for dataset: [[{A.dataset}]], fold-ID: {fold_idx}."
         )
 
         # ## 2. Native Guide CF generation
@@ -164,7 +180,7 @@ def main():
 
         # Train the model
         reset_seeds()
-        logger.info("Training log for LSTM-FCN classifier:")
+        logger.info("Training FCN classifier...")
         classifier_history = classifier_fcn.fit(
             X_train,
             y_train,
@@ -241,7 +257,8 @@ def main():
                 )
             )
             prob_target = model.predict(X_example.reshape(1, -1, 1))[0][target_label]
-            print(f"Initialized, with prediction probability: {prob_target}.")
+            # # uncomment for debugging
+            # print(f"Initialized, with prediction probability: {prob_target}.")
 
             n_timesteps = X_example.shape[0]
             while prob_target < 0.5 and subarray_length < n_timesteps:
@@ -270,11 +287,14 @@ def main():
                 #     f"Iter:{subarray_length}, with prediction probability: {prob_target}."
                 # )
 
-            print(f"Finished, with subarray/total length: {subarray_length}/{n_timesteps}, prediction probability: {prob_target}.")
+            # # uncomment for debugging
+            # print(
+            #     f"Finished, with subarray/total length: {subarray_length}/{n_timesteps}, prediction probability: {prob_target}."
+            # )
 
             return X_example
 
-        # used to find the maximum contigious subarray of length k in the explanation weight vector
+        # used to find the maximum contiguous subarray of length k in the explanation weight vector
         def findSubarray(a, k):
             n = len(a)
             vec = []
@@ -297,14 +317,17 @@ def main():
             return vec[np.argmax(sum_arr)]
 
         ### Evaluation metrics
-        # Get these instances of negative predictions, which is class abnormal (0); (normal is class 1)
-        X_pred_neg = X_test[y_pred_classes == neg_label]
-        nuns_neg = nuns[y_pred_classes == neg_label]
+        # Get these instances for CF evaluation; class abnormal (0) VS normal class (1)
+        rand_X_test = X_test[rand_test_idx]
+        rand_y_pred = y_pred_classes[rand_test_idx]
+        rand_nuns = nuns[rand_test_idx]
 
         cf_cam_swap = []
         n_iter = 0
-        for test_instance, nun_idx in zip(X_pred_neg, nuns_neg):
-            print(f"sample: {n_iter}.")
+        for test_instance, nun_idx, pred in zip(rand_X_test, rand_nuns, rand_y_pred):
+            target_label = 1 - pred  # for binary classification
+            # # uncomment for debugging
+            # print(f"Sample: {n_iter}, target label: {target_label}.")
             n_iter += 1
             cf_cam_swap.append(
                 counterfactual_generator_swap(
@@ -312,39 +335,44 @@ def main():
                     nun_idx,
                     1,
                     model=classifier_fcn,
-                    target_label=pos_label,
+                    target_label=target_label,
                 )
             )
+        print(f"#Sample: {n_iter} finished, in total.")
 
         # predicted probabilities of CFs
         cf_cam_swap = np.array(cf_cam_swap)
-        z_pred = classifier_fcn.predict(cf_cam_swap)[:, pos_label]
+        z_pred = classifier_fcn.predict(cf_cam_swap)
+        cf_pred_labels = np.argmax(z_pred, axis=1)
 
         # normalize negative predicted samples and CF samples before evaluation
-        X_pred_neg, _ = time_series_normalize(
-            data=X_pred_neg, n_timesteps=n_timesteps, scaler=trained_scaler
+        rand_X_test, _ = time_series_normalize(
+            data=rand_X_test, n_timesteps=n_timesteps, scaler=trained_scaler
         )
         cf_samples, _ = time_series_normalize(
             data=cf_cam_swap, n_timesteps=n_timesteps, scaler=trained_scaler
         )
         evaluate_res = evaluate(
-            np.squeeze(X_pred_neg),
+            np.squeeze(rand_X_test),
             np.squeeze(cf_samples),
-            z_pred,
-            n_timesteps,
-            lof_estimator,
-            nn_model,
+            rand_y_pred,
+            cf_pred_labels,
+            lof_estimator_pos,
+            lof_estimator_neg,
+            nn_model_pos,
+            nn_model_neg,
         )
 
         result_writer.write_result(
             fold_idx,
-            "Native Guide CF",
+            "CF - Native Guide",
             acc,
             0,
             0,
             evaluate_res,
             pred_margin_weight=0,
             step_weight_type=0,
+            threshold_tau=0,
         )
         logger.info(f"Done for CF search [Native Guide].")
 
@@ -356,7 +384,11 @@ def main():
         X_test = np.squeeze(X_test)
 
         shapelet_clf = ShapeletForestClassifier(
-            metric="euclidean", random_state=RANDOM_STATE, n_estimators=50, max_depth=5
+            n_shapelets=10,
+            metric="euclidean",
+            random_state=RANDOM_STATE,
+            n_estimators=50,
+            max_depth=5,
         )
         # y should be a 1d array in .fit()
         shapelet_clf.fit(X_train, y_train_classes)
@@ -364,49 +396,56 @@ def main():
         # warnings.filterwarnings(
         #     "ignore", category=FutureWarning
         # )  # ignore warnings of package version
-        y_pred2 = shapelet_clf.predict(X_test)
+        y_pred_classes2 = shapelet_clf.predict(X_test)
 
-        acc2 = balanced_accuracy_score(y_true=y_test_classes, y_pred=y_pred2)
+        acc2 = balanced_accuracy_score(y_true=y_test_classes, y_pred=y_pred_classes2)
         logger.info(f"Shapelet forest classifier trained, with test accuracy {acc2}.")
 
         # Get these instances of negative predictions, which is class 0
-        X_pred_neg2 = X_test[y_pred2 == neg_label]
+        rand_X_test2 = X_train[rand_test_idx]
+        rand_y_pred2 = y_pred_classes2[rand_test_idx]
+        desired_labels2 = 1 - rand_y_pred2
+
         cf_samples2, _, _ = counterfactuals(
             shapelet_clf,
-            X_pred_neg2,
-            pos_label,
+            rand_X_test2,
+            desired_labels2,
             scoring="euclidean",
             random_state=RANDOM_STATE,
         )
 
         # ### Evaluation metrics
-        z_pred2 = shapelet_clf.predict_proba(cf_samples2)[:, 1]
+        z_pred2 = shapelet_clf.predict_proba(cf_samples2)
+        cf_pred_labels2 = np.argmax(z_pred2, axis=1)
 
-        X_pred_neg2, _ = time_series_normalize(
-            data=X_pred_neg2, n_timesteps=n_timesteps, scaler=trained_scaler
+        rand_X_test2, _ = time_series_normalize(
+            data=rand_X_test2, n_timesteps=n_timesteps, scaler=trained_scaler
         )
         cf_samples2, _ = time_series_normalize(
             data=cf_samples2, n_timesteps=n_timesteps, scaler=trained_scaler
         )
 
         evaluate_res2 = evaluate(
-            np.squeeze(X_pred_neg2),
+            np.squeeze(rand_X_test2),
             np.squeeze(cf_samples2),
-            z_pred2,
-            n_timesteps,
-            lof_estimator,
-            nn_model,
+            rand_y_pred2,
+            cf_pred_labels2,
+            lof_estimator_pos,
+            lof_estimator_neg,
+            nn_model_pos,
+            nn_model_neg,
         )
 
         result_writer.write_result(
             fold_idx,
-            "Shapelet CF",
+            "CF - Shapelet Forest",
             acc2,
             0,
             0,
             evaluate_res2,
             pred_margin_weight=0,
             step_weight_type=0,
+            threshold_tau=0,
         )
         logger.info(f"Done for CF search [Shapelet].")
 
@@ -416,49 +455,55 @@ def main():
         knn_clf = KNeighborsClassifier(n_neighbors=5, metric="euclidean")
         knn_clf.fit(X_train, y_train_classes)
 
-        y_pred3 = knn_clf.predict(X_test)
-        acc3 = balanced_accuracy_score(y_true=y_test_classes, y_pred=y_pred3)
+        y_pred_classes3 = knn_clf.predict(X_test)
+        acc3 = balanced_accuracy_score(y_true=y_test_classes, y_pred=y_pred_classes3)
         logger.info(f"k-NN classifier trained, with test accuracy {acc3}.")
 
-        # Get these instances of negative predictions, which is class abnormal (0); (normal is class 1)
-        X_pred_neg3 = X_test[y_pred3 == neg_label]
+        # Get the test instances
+        rand_X_test3 = X_train[rand_test_idx]
+        rand_y_pred3 = y_pred_classes3[rand_test_idx]
+        desired_labels3 = 1 - rand_y_pred3
 
         cf_samples3, _, _ = counterfactuals(
             knn_clf,
-            X_pred_neg3,
-            pos_label,
+            rand_X_test3,
+            desired_labels3,
             scoring="euclidean",
             random_state=RANDOM_STATE,
         )
 
         # ### Evaluation metrics
-        z_pred3 = knn_clf.predict_proba(cf_samples3)[:, 1]
+        z_pred3 = knn_clf.predict_proba(cf_samples3)
+        cf_pred_labels3 = np.argmax(z_pred3, axis=1)
 
-        X_pred_neg3, _ = time_series_normalize(
-            data=X_pred_neg3, n_timesteps=n_timesteps, scaler=trained_scaler
+        rand_X_test3, _ = time_series_normalize(
+            data=rand_X_test3, n_timesteps=n_timesteps, scaler=trained_scaler
         )
         cf_samples3, _ = time_series_normalize(
             data=cf_samples3, n_timesteps=n_timesteps, scaler=trained_scaler
         )
 
         evaluate_res3 = evaluate(
-            np.squeeze(X_pred_neg3),
+            np.squeeze(rand_X_test3),
             np.squeeze(cf_samples3),
-            z_pred3,
-            n_timesteps,
-            lof_estimator,
-            nn_model,
+            rand_y_pred3,
+            cf_pred_labels3,
+            lof_estimator_pos,
+            lof_estimator_neg,
+            nn_model_pos,
+            nn_model_neg,
         )
 
         result_writer.write_result(
             fold_idx,
-            "kNN CF",
+            "CF - kNN",
             acc3,
             0,
             0,
             evaluate_res3,
             pred_margin_weight=0,
             step_weight_type=0,
+            threshold_tau=0,
         )
         logger.info(f"Done for CF search [k-NN].")
 
