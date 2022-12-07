@@ -9,7 +9,6 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix
 from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.neighbors import LocalOutlierFactor, NearestNeighbors
 from tensorflow import keras
 from tensorflow.keras.utils import to_categorical
 from wildboar.datasets import load_dataset
@@ -23,6 +22,7 @@ from help_functions import (
     reset_seeds,
     time_series_normalize,
     upsample_minority,
+    fit_evaluation_models,
 )
 from keras_models import *
 from _guided import get_global_weights
@@ -77,6 +77,12 @@ def main():
         default=0.5,
         help="The weight value for prediction margin loss, ranging between [0, 1]. Equals to 1 refer to unconstrained version.",
     )
+    parser.add_argument(
+        "--tau-value",
+        type=float,
+        default=0.5,
+        help="The threshold of decision boundary during CF search, ranging between [0.5, 1], default to 0.5.",
+    )
     A = parser.parse_args()
 
     logger = logging.getLogger(__name__)
@@ -90,6 +96,7 @@ def main():
     # PRED_MARGIN_W_LIST = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0] # TODO: write another script for ablation study
     pred_margin_weight = A.w_value
     logger.info(f"W value: {pred_margin_weight}.")  # for debugging
+    logger.info(f"Tau value: {A.tau_value}.")  # for debugging
 
     result_writer = ResultWriter(file_name=A.output, dataset_name=A.dataset)
     logger.info(f"Result writer is ready, writing to {A.output}...")
@@ -114,10 +121,19 @@ def main():
         X_train, X_test = X[train_index], X[test_index]
         y_train, y_test = y_copy[train_index], y_copy[test_index]
 
-        fold_idx += 1
-        logger.info(
-            f"Current CV fold: [{fold_idx}], with X_train | X_test: {X_train.shape} | {X_test.shape}."
-        )
+        # Get 50 samples for CF evaluation if test size larger than 50
+        test_size = len(y_test)
+        if test_size >= 50:
+            test_indices = np.arange(test_size)
+            _, _, _, rand_test_idx = train_test_split(
+                y_test,
+                test_indices,
+                test_size=50,
+                random_state=RANDOM_STATE,
+                stratify=y_test,
+            )
+        else:
+            rand_test_idx = np.arange(test_size)
 
         X_train, X_val, y_train, y_val = train_test_split(
             X_train,
@@ -127,6 +143,11 @@ def main():
             stratify=y_train,
         )
 
+        fold_idx += 1
+        logger.info(
+            f"Current CV fold: [{fold_idx}], with `X_train`, `X_val` & `X_test` shape: {X_train.shape} | {X_val.shape} | {X_test.shape}."
+        )
+
         # Upsample the minority class
         y_train_copy = y_train.copy()
         X_train, y_train = upsample_minority(
@@ -134,10 +155,12 @@ def main():
         )
         if y_train.shape != y_train_copy.shape:
             logger.info(
-                f"Data upsampling performed, current distribution of y: \n{pd.value_counts(y_train)}."
+                f"Data upsampling performed, current distribution of y_train: \n{pd.value_counts(y_train)}."
             )
         else:
-            logger.info(f"Current distribution of y: \n{pd.value_counts(y_train)}.")
+            logger.info(
+                f"Current distribution of y_train: \n{pd.value_counts(y_train)}."
+            )
 
         nb_classes = len(np.unique(y_train))
         y_train_classes, y_val_classes, y_test_classes = (
@@ -175,23 +198,19 @@ def main():
         )
 
         # ### 1.2 Evaluation models
-        # Fit the LOF model for novelty detection (novelty=True)
-        lof_estimator = LocalOutlierFactor(
-            n_neighbors=int(np.cbrt(X_train_processed.shape[0])),
-            novelty=True,
-            metric="euclidean",
+        n_neighbors_lof = int(np.cbrt(X_train_processed.shape[0]))
+        lof_estimator_pos, nn_model_pos = fit_evaluation_models(
+            n_neighbors_lof=n_neighbors_lof,
+            n_neighbors_nn=1,
+            training_data=np.squeeze(X_train_processed[y_train_classes == pos_label]),
         )
-        X_target_label = np.squeeze(X_train_processed[y_train_classes == pos_label])
-        lof_estimator.fit(X_target_label)  # use the target class to train LOF
-        logger.info(
-            f"LOF estimator trained for dataset: [[{A.dataset}]], fold-ID: {fold_idx}."
+        lof_estimator_neg, nn_model_neg = fit_evaluation_models(
+            n_neighbors_lof=n_neighbors_lof,
+            n_neighbors_nn=1,
+            training_data=np.squeeze(X_train_processed[y_train_classes == neg_label]),
         )
-
-        # Fit an unsupervised 1NN with all the positive training samples
-        nn_model = NearestNeighbors(n_neighbors=1, metric="euclidean")
-        nn_model.fit(X_target_label)
         logger.info(
-            f"NN estimator trained for  dataset: [[{A.dataset}]], fold-ID: {fold_idx}."
+            f"LOF and NN estimators trained for dataset: [[{A.dataset}]], fold-ID: {fold_idx}."
         )
 
         # ## 2. LatentCF models
@@ -206,7 +225,7 @@ def main():
             n_timesteps_padded, n_features, n_output=2, n_LSTM_cells=A.n_lstmcells
         )
 
-        optimizer = keras.optimizers.Adam(lr=0.0001)
+        optimizer = keras.optimizers.Adam(learning_rate=0.0001)
         classifier.compile(
             optimizer=optimizer, loss="binary_crossentropy", metrics=["accuracy"]
         )
@@ -267,7 +286,7 @@ def main():
         ###############################################
         # ### 1dCNN autoencoder
         autoencoder = Autoencoder(n_timesteps_padded, n_features)
-        optimizer = keras.optimizers.Adam(lr=0.0005)
+        optimizer = keras.optimizers.Adam(learning_rate=0.0005)
         autoencoder.compile(optimizer=optimizer, loss="mse")
 
         # Define the early stopping criteria
@@ -297,36 +316,43 @@ def main():
             f"The current prediction margin weight is {pred_margin_weight}, for [1dCNN autoencoder]."
         )
 
-        # Get these instances of negative predictions, which is class abnormal (0); (normal is class 1)
-        X_pred_neg = X_test_processed_padded[y_pred_classes == neg_label]
+        # Get these instances for CF evaluation; class abnormal (0) VS normal class (1)
+        rand_X_test = X_test_processed_padded[rand_test_idx]
+        rand_y_pred = y_pred_classes[rand_test_idx]
 
         lr_list = [A.lr_list[0]] if A.lr_list[0] is not None else [0.001, 0.0001]
         best_lr, best_cf_model, best_cf_samples, _ = find_best_lr(
             classifier,
-            X_pred_neg,
+            X_samples=rand_X_test,
+            pred_labels=rand_y_pred,
             autoencoder=autoencoder,
             lr_list=lr_list,
             pred_margin_weight=pred_margin_weight,
             step_weights=step_weights,
             random_state=RANDOM_STATE,
             padding_size=padding_size,
+            target_prob=A.tau_value,
         )
         logger.info(f"The best learning rate found is {best_lr}.")
 
         # predicted probabilities of CFs
-        z_pred = classifier.predict(best_cf_samples)[:, pos_label]
+        z_pred = classifier.predict(best_cf_samples)
+        cf_pred_labels = np.argmax(z_pred, axis=1)
+
         # remove extra paddings after counterfactual generation in 1dCNN autoencoder
         best_cf_samples = remove_paddings(best_cf_samples, padding_size)
         # use the unpadded X_test for evaluation
-        X_pred_neg_original = np.squeeze(X_test_processed[y_pred_classes == neg_label])
+        rand_X_test_original = np.squeeze(X_test_processed[rand_test_idx])
 
         evaluate_res = evaluate(
-            X_pred_neg_original,
+            rand_X_test_original,
             best_cf_samples,
-            z_pred,
-            n_timesteps,
-            lof_estimator,
-            nn_model,
+            rand_y_pred,
+            cf_pred_labels,
+            lof_estimator_pos,
+            lof_estimator_neg,
+            nn_model_pos,
+            nn_model_neg,
         )
 
         result_writer.write_result(
@@ -338,6 +364,7 @@ def main():
             evaluate_res,
             pred_margin_weight=pred_margin_weight,
             step_weight_type=A.w_type.lower(),
+            threshold_tau=A.tau_value,
         )
         logger.info(
             f"Done for CF search [1dCNN autoencoder], pred_margin_weight={pred_margin_weight}."
@@ -349,7 +376,7 @@ def main():
         # ### LSTM autoencoder
         # use the padded dimension
         autoencoder2 = AutoencoderLSTM(n_timesteps_padded, n_features)
-        optimizer = keras.optimizers.Adam(lr=0.0001)
+        optimizer = keras.optimizers.Adam(learning_rate=0.0001)
         autoencoder2.compile(optimizer=optimizer, loss="mse")
 
         # Define the early stopping criteria
@@ -376,37 +403,39 @@ def main():
         logger.info(
             f"The current prediction margin weight is {pred_margin_weight}, for [LSTM autoencoder]."
         )
-        # Get these instances of negative predictions
-        X_pred_neg = X_test_processed_padded[y_pred_classes == neg_label]
 
         lr_list2 = [A.lr_list[1]] if A.lr_list[1] is not None else [0.001, 0.0001]
         best_lr2, best_cf_model2, best_cf_samples2, _ = find_best_lr(
             classifier,
-            X_pred_neg,
+            X_samples=rand_X_test,
+            pred_labels=rand_y_pred,
             autoencoder=autoencoder2,
             lr_list=lr_list2,
             pred_margin_weight=pred_margin_weight,
             step_weights=step_weights,
             random_state=RANDOM_STATE,
             padding_size=padding_size,
+            target_prob=A.tau_value,
         )
         logger.info(f"The best learning rate found is {best_lr2}.")
 
         # ### Evaluation metrics
         # predicted probabilities of CFs
-        z_pred2 = classifier.predict(best_cf_samples2)[:, pos_label]
+        z_pred2 = classifier.predict(best_cf_samples2)
+        cf_pred_labels2 = np.argmax(z_pred2, axis=1)
+
         # remove extra paddings after counterfactual generation in 1dCNN autoencoder
         best_cf_samples2 = remove_paddings(best_cf_samples2, padding_size)
-        # use the unpadded X_test for evaluation
-        X_pred_neg_original = np.squeeze(X_test_processed[y_pred_classes == neg_label])
 
         evaluate_res2 = evaluate(
-            X_pred_neg_original,
+            rand_X_test_original,
             best_cf_samples2,
-            z_pred2,
-            n_timesteps,
-            lof_estimator,
-            nn_model,
+            rand_y_pred,
+            cf_pred_labels2,
+            lof_estimator_pos,
+            lof_estimator_neg,
+            nn_model_pos,
+            nn_model_neg,
         )
 
         result_writer.write_result(
@@ -418,6 +447,7 @@ def main():
             evaluate_res2,
             pred_margin_weight=pred_margin_weight,
             step_weight_type=A.w_type.lower(),
+            threshold_tau=A.tau_value,
         )
         logger.info(
             f"Done for CF search [LSTM autoencoder], pred_margin_weight={pred_margin_weight}."
@@ -429,37 +459,39 @@ def main():
         logger.info(
             f"The current prediction margin weight is {pred_margin_weight}, for [No autoencoder]."
         )
-        # Get these instances of negative predictions, which is class abnormal (0); (normal is class 1)
-        X_pred_neg = X_test_processed_padded[y_pred_classes == neg_label]
 
         lr_list3 = [A.lr_list[2]] if A.lr_list[2] is not None else [0.001, 0.0001]
         best_lr3, best_cf_model3, best_cf_samples3, _ = find_best_lr(
             classifier,
-            X_pred_neg,
+            X_samples=rand_X_test,
+            pred_labels=rand_y_pred,
             autoencoder=None,
             lr_list=lr_list3,
             pred_margin_weight=pred_margin_weight,
             step_weights=step_weights,
             random_state=RANDOM_STATE,
             padding_size=padding_size,
+            target_prob=A.tau_value,
         )
         logger.info(f"The best learning rate found is {best_lr3}.")
 
         # ### Evaluation metrics
         # predicted probabilities of CFs
-        z_pred3 = classifier.predict(best_cf_samples3)[:, pos_label]
+        z_pred3 = classifier.predict(best_cf_samples3)
+        cf_pred_labels3 = np.argmax(z_pred3, axis=1)
+
         # remove extra paddings after counterfactual generation in 1dCNN autoencoder
         best_cf_samples3 = remove_paddings(best_cf_samples3, padding_size)
-        # use the unpadded X_test for evaluation
-        X_pred_neg_original = np.squeeze(X_test_processed[y_pred_classes == neg_label])
 
         evaluate_res3 = evaluate(
-            X_pred_neg_original,
+            rand_X_test_original,
             best_cf_samples3,
-            z_pred3,
-            n_timesteps,
-            lof_estimator,
-            nn_model,
+            rand_y_pred,
+            cf_pred_labels3,
+            lof_estimator_pos,
+            lof_estimator_neg,
+            nn_model_pos,
+            nn_model_neg,
         )
 
         result_writer.write_result(
@@ -471,6 +503,7 @@ def main():
             evaluate_res3,
             pred_margin_weight=pred_margin_weight,
             step_weight_type=A.w_type.lower(),
+            threshold_tau=A.tau_value,
         )
         logger.info(
             f"Done for CF search [No autoencoder], pred_margin_weight={pred_margin_weight}."

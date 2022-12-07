@@ -57,7 +57,7 @@ class ModifiedLatentCF:
             tf.optimizers.Adam(learning_rate=1e-4) if optimizer is None else optimizer
         )
         self.mse_loss_ = keras.losses.MeanSquaredError()
-        self.probability_ = tf.constant(probability)
+        self.probability_ = tf.constant([probability])
         self.tolerance_ = tf.constant(tolerance)
         self.max_iter = max_iter
         self.autoencoder = autoencoder
@@ -133,10 +133,10 @@ class ModifiedLatentCF:
         )
 
     # additional input of step_weights
-    def compute_loss(self, original_sample, z_search, step_weights):
+    def compute_loss(self, original_sample, z_search, step_weights, target_label):
         loss = tf.zeros(shape=())
         decoded = self.decoder_(z_search) if self.autoencoder is not None else z_search
-        pred = self.model_(decoded)
+        pred = self.model_(decoded)[:, target_label]
 
         pred_margin_loss = self.pred_margin_mse(pred)
         loss += self.pred_margin_weight * pred_margin_loss
@@ -147,8 +147,8 @@ class ModifiedLatentCF:
             step_weights=tf.cast(step_weights, tf.float32),
         )
         # weighted_steps_loss = self.weighted_normalized_l2(
-        #     original_sample=tf.cast(original_sample, dtype=tf.float32), 
-        #     decoded=tf.cast(decoded, dtype=tf.float32), 
+        #     original_sample=tf.cast(original_sample, dtype=tf.float32),
+        #     decoded=tf.cast(decoded, dtype=tf.float32),
         #     step_weights=tf.cast(step_weights, tf.float32)
         # )
         loss += self.weighted_steps_weight * weighted_steps_loss
@@ -157,7 +157,7 @@ class ModifiedLatentCF:
 
     # TODO: compatible with the counterfactuals of wildboar
     #       i.e., define the desired output target per label
-    def transform(self, x):
+    def transform(self, x, pred_labels):
         """Generate counterfactual explanations
 
         x : array-like of shape [n_samples, n_timestep, n_dims]
@@ -170,14 +170,12 @@ class ModifiedLatentCF:
         weights_all = np.empty((x.shape[0], 1, x.shape[1], x.shape[2]))
 
         for i in range(x.shape[0]):
-            if i % 50 == 0:
-                print(f"{i} samples been transformed.")
+            if i % 25 == 0:
+                print(f"{i+1} samples been transformed.")
 
             # if self.step_weights == "global" OR "uniform"
             if isinstance(self.step_weights, np.ndarray):  #  "global" OR "uniform"
                 step_weights = self.step_weights
-            # elif self.step_weight_type == "uniform":
-            #     step_weights = np.ones((1, x.shape[1], x.shape[2]))
             elif self.step_weights == "local":
                 # ignore warning of matrix multiplication, from LIMESegment: `https://stackoverflow.com/questions/29688168/mean-nanmean-and-warning-mean-of-empty-slice`
                 # ignore warning of scipy package warning, from LIMESegment: `https://github.com/paulvangentcom/heartrate_analysis_python/issues/31`
@@ -185,7 +183,10 @@ class ModifiedLatentCF:
                     warnings.simplefilter("ignore", category=RuntimeWarning)
                     warnings.simplefilter("ignore", category=UserWarning)
                     step_weights = get_local_weights(
-                        x[i], self.model_, random_state=self.random_state
+                        x[i],
+                        self.model_,
+                        random_state=self.random_state,
+                        pred_label=pred_labels[i],
                     )
             else:
                 raise NotImplementedError(
@@ -193,17 +194,19 @@ class ModifiedLatentCF:
                 )
 
             # print(step_weights.reshape(-1))
-            x_sample, loss = self._transform_sample(x[np.newaxis, i], step_weights)
+            x_sample, loss = self._transform_sample(
+                x[np.newaxis, i], step_weights, pred_labels[i]
+            )
 
             result_samples[i] = x_sample
             losses[i] = loss
             weights_all[i] = step_weights
 
-        print(f"{i} samples been transformed, in total.")
+        print(f"{i+1} samples been transformed, in total.")
 
         return result_samples, losses, weights_all
 
-    def _transform_sample(self, x, step_weights):
+    def _transform_sample(self, x, step_weights, pred_label):
         """Generate counterfactual explanations
 
         x : array-like of shape [n_samples, n_timestep, n_dims]
@@ -216,9 +219,11 @@ class ModifiedLatentCF:
             z = tf.Variable(x, dtype=tf.float32)
 
         it = 0
+        target_label = 1 - pred_label  # for binary classification
+
         with tf.GradientTape() as tape:
             loss, pred_margin_loss, weighted_steps_loss = self.compute_loss(
-                x, z, step_weights
+                x, z, step_weights, target_label
             )
 
         if self.autoencoder is not None:
@@ -236,7 +241,8 @@ class ModifiedLatentCF:
         # loss > tf.multiply(self.tolerance_rate_, loss_original)
         #
         while (
-            pred_margin_loss > self.tolerance_ or pred[:, 1] < self.probability_
+            pred_margin_loss > self.tolerance_
+            or pred[:, target_label] < self.probability_
         ) and (it < self.max_iter if self.max_iter else True):
             # Get gradients of loss wrt the sample
             grads = tape.gradient(loss, z)
@@ -245,7 +251,7 @@ class ModifiedLatentCF:
 
             with tf.GradientTape() as tape:
                 loss, pred_margin_loss, weighted_steps_loss = self.compute_loss(
-                    x, z, step_weights
+                    x, z, step_weights, target_label
                 )
             it += 1
 
@@ -282,20 +288,29 @@ def extract_encoder_decoder(autoencoder):
     return autoencoder.input, encoder, encode_input, decoder
 
 
-def get_local_weights(input_sample, classifier_model, random_state=None):
+def get_local_weights(
+    input_sample, classifier_model, random_state=None, pred_label=None
+):
     n_timesteps, n_dims = input_sample.shape  # n_dims=1
+    # for binary classification, default to 1
+    desired_label = int(1 - pred_label) if pred_label is not None else 1
     seg_imp, seg_idx = LIMESegment(
         input_sample,
         classifier_model,
-        model_type=1,
+        model_type=desired_label,
         cp=10,
         window_size=10,
         random_state=random_state,
     )
 
-    # calculate the threshold of masking, 25 percentile
-    masking_threshold = np.percentile(seg_imp, 25)
-    masking_idx = np.where(seg_imp <= masking_threshold)
+    if desired_label == 1:
+        # calculate the threshold of masking, lower 25 percentile (neg contribution for pos class)
+        masking_threshold = np.percentile(seg_imp, 25)
+        masking_idx = np.where(seg_imp <= masking_threshold)
+    else:  # desired_label == 0
+        # calculate the threshold of masking, upper 25 percentile (pos contribution for neg class)
+        masking_threshold = np.percentile(seg_imp, 75)
+        masking_idx = np.where(seg_imp >= masking_threshold)
 
     weighted_steps = np.ones(n_timesteps)
     for start_idx in masking_idx[0]:

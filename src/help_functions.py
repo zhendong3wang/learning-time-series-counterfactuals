@@ -8,6 +8,8 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.utils import resample, shuffle
+from sklearn.metrics import accuracy_score
+from sklearn.neighbors import LocalOutlierFactor, NearestNeighbors
 
 # from _composite import ModifiedLatentCF
 from _guided import ModifiedLatentCF
@@ -38,10 +40,9 @@ class ResultWriter:
                     "lof_score",
                     "relative_proximity",
                     "compactness",
-                    "margin_mean",
-                    "margin_std",
                     "pred_margin_weight",
                     "step_weight_type",
+                    "threshold_tau",
                 ]
             )
 
@@ -55,6 +56,7 @@ class ResultWriter:
         evaluate_res,
         pred_margin_weight=1.0,
         step_weight_type="",
+        threshold_tau=0.5,
     ):
         (
             proxi,
@@ -62,8 +64,6 @@ class ResultWriter:
             lof_score,
             relative_proximity,
             compactness,
-            cost_mean,
-            cost_std,
         ) = evaluate_res
 
         with open(self.file_name, "a") as f:
@@ -81,10 +81,9 @@ class ResultWriter:
                     lof_score,
                     relative_proximity,
                     compactness,
-                    cost_mean,
-                    cost_std,
                     pred_margin_weight,
                     step_weight_type,
+                    threshold_tau,
                 ]
             )
 
@@ -217,19 +216,44 @@ evaluation metrics
 """
 
 
-def evaluate(X_pred_neg, cf_samples, z_pred, n_timesteps, lof_estimator, nn_estimator):
+def fit_evaluation_models(n_neighbors_lof, n_neighbors_nn, training_data):
+    # Fit the LOF model for novelty detection (novelty=True)
+    lof_estimator = LocalOutlierFactor(
+        n_neighbors=n_neighbors_lof,
+        novelty=True,
+        metric="euclidean",
+    )
+    lof_estimator.fit(training_data)
+
+    # Fit an unsupervised 1NN with all the training samples from the desired class
+    nn_model = NearestNeighbors(n_neighbors=n_neighbors_nn, metric="euclidean")
+    nn_model.fit(training_data)
+    return lof_estimator, nn_model
+
+
+def evaluate(
+    X_pred_neg,
+    cf_samples,
+    pred_labels,
+    cf_labels,
+    lof_estimator_pos,
+    lof_estimator_neg,
+    nn_estimator_pos,
+    nn_estimator_neg,
+):
     proxi = euclidean_distance(X_pred_neg, cf_samples)
-    valid = validity_score(z_pred)
-    compact = compactness_score(X_pred_neg, cf_samples, n_timesteps=n_timesteps)
-    cost_mean, cost_std = cost_score(z_pred)
+    valid = validity_score(pred_labels, cf_labels)
+    compact = compactness_score(X_pred_neg, cf_samples)
+
     # TODO: add LOF and RP score for debugging training?
-    if (lof_estimator is not None) and (nn_estimator is not None):
-        lof_score = calculate_lof(cf_samples, lof_estimator)
-        rp_score = relative_proximity(X_pred_neg, cf_samples, nn_estimator)
+    lof_score = calculate_lof(
+        cf_samples, pred_labels, lof_estimator_pos, lof_estimator_neg
+    )
+    rp_score = relative_proximity(
+        X_pred_neg, cf_samples, pred_labels, nn_estimator_pos, nn_estimator_neg
+    )
 
-        return proxi, valid, lof_score, rp_score, compact, cost_mean, cost_std
-
-    return proxi, valid, 0, 0, compact, cost_mean, cost_std
+    return proxi, valid, lof_score, rp_score, compact
 
 
 def euclidean_distance(X, cf_samples, average=True):
@@ -237,44 +261,99 @@ def euclidean_distance(X, cf_samples, average=True):
     return np.mean(paired_distances) if average else paired_distances
 
 
-def validity_score(cf_probs, decision_prob=0.5):
-    valid_counts = np.sum(cf_probs >= decision_prob)
-    total_counts = len(cf_probs)
-    return valid_counts / total_counts
-
-
-def cost_score(cf_probs, decision_prob=0.5):
-    diff = cf_probs - decision_prob
-    return np.mean(diff), np.std(diff)
+def validity_score(pred_labels, cf_labels):
+    desired_labels = 1 - pred_labels  # for binary classification
+    return accuracy_score(y_true=desired_labels, y_pred=cf_labels)
 
 
 # originally from: https://github.com/isaksamsten/wildboar/blob/859758884677ba32a601c53a5e2b9203a644aa9c/src/wildboar/metrics/_counterfactual.py#L279
-def compactness_score(X, cf_samples, n_timesteps):
-    # absolute tolerance atol=0.001, OR 0.0001?
-    c = np.isclose(X, cf_samples, atol=0.001)
+def compactness_score(X, cf_samples):
+    # absolute tolerance atol=0.01, 0.001, OR 0.0001?
+    c = np.isclose(X, cf_samples, atol=0.01)
 
-    return np.mean(1 - np.sum(c, axis=1) / n_timesteps)
+    # return a positive compactness, instead of 1 - np.mean(..)
+    return np.mean(c, axis=(1, 0))
 
 
-def calculate_lof(cf_samples, lof_estimator):
-    y_pred_cf = lof_estimator.predict(cf_samples)
-    n_error_cf = y_pred_cf[y_pred_cf == -1].size
-    lof_score = n_error_cf / y_pred_cf.shape[0]
+# def sax_compactness(X, cf_samples, n_timesteps):
+#     from wildboar.transform import symbolic_aggregate_approximation
+
+#     X = symbolic_aggregate_approximation(X, window=window, n_bins=n_bins)
+#     cf_samples = symbolic_aggregate_approximation(
+#         cf_samples, window=window, n_bins=n_bins
+#     )
+
+#     # absolute tolerance atol=0.01, 0.001, OR 0.0001?
+#     c = np.isclose(X, cf_samples, atol=0.01)
+
+#     return np.mean(1 - np.sum(c, axis=1) / n_timesteps)
+
+
+def calculate_lof(cf_samples, pred_labels, lof_estimator_pos, lof_estimator_neg):
+    desired_labels = 1 - pred_labels  # for binary classification
+
+    pos_idx, neg_idx = (
+        np.where(desired_labels == 1)[0],  # pos_label = 1
+        np.where(desired_labels == 0)[0],  # neg_label - 0
+    )
+    # check if the NumPy array is empty
+    if pos_idx.any():
+        y_pred_cf1 = lof_estimator_pos.predict(cf_samples[pos_idx])
+        n_error_cf1 = y_pred_cf1[y_pred_cf1 == -1].size
+    else:
+        n_error_cf1 = 0
+
+    if neg_idx.any():
+        y_pred_cf2 = lof_estimator_neg.predict(cf_samples[neg_idx])
+        n_error_cf2 = y_pred_cf2[y_pred_cf2 == -1].size
+    else:
+        n_error_cf2 = 0
+
+    lof_score = (n_error_cf1 + n_error_cf2) / cf_samples.shape[0]
     return lof_score
 
 
-def relative_proximity(X_pred_neg, cf_samples, nn_estimator):
-    nn_distances, closest_idx = nn_estimator.kneighbors(
-        X_pred_neg, return_distance=True
-    )
-    proximity = euclidean_distance(X_pred_neg, cf_samples)
+def relative_proximity(
+    X_inputs, cf_samples, pred_labels, nn_estimator_pos, nn_estimator_neg
+):
+    desired_labels = 1 - pred_labels  # for binary classification
 
-    # nn_samples = X_target_label[closest_idx[:, 0]]
-    # nn_distances = euclidean_distance(X_pred_neg, nn_samples)
+    nn_distance_list = np.array([])
+    proximity_list = np.array([])
+
+    pos_idx, neg_idx = (
+        np.where(desired_labels == 1)[0],  # pos_label = 1
+        np.where(desired_labels == 0)[0],  # neg_label = 0
+    )
+    if pos_idx.any():
+        nn_distances1, _ = nn_estimator_pos.kneighbors(
+            np.squeeze(X_inputs[pos_idx]), return_distance=True
+        )
+        proximity1 = euclidean_distance(
+            X_inputs[pos_idx], cf_samples[pos_idx], average=False
+        )
+
+        nn_distance_list = np.concatenate(
+            (nn_distance_list, np.squeeze(nn_distances1)), axis=0
+        )
+        proximity_list = np.concatenate((proximity_list, proximity1), axis=0)
+
+    if neg_idx.any():
+        nn_distances2, _ = nn_estimator_neg.kneighbors(
+            np.squeeze(X_inputs[neg_idx]), return_distance=True
+        )
+        proximity2 = euclidean_distance(
+            X_inputs[neg_idx], cf_samples[neg_idx], average=False
+        )
+
+        nn_distance_list = np.concatenate(
+            (nn_distance_list, np.squeeze(nn_distances2)), axis=0
+        )
+        proximity_list = np.concatenate((proximity_list, proximity2), axis=0)
 
     # TODO: paired proximity score for (X_pred_neg, cf_samples), if not average (?)
-    # relative_proximity = proximity / nn_distances.mean() 
-    relative_proximity = proximity / nn_distances.mean()
+    # relative_proximity = proximity / nn_distances.mean()
+    relative_proximity = proximity_list.mean() / nn_distance_list.mean()
 
     return relative_proximity
 
@@ -284,33 +363,10 @@ counterfactual model needed
 """
 
 
-def find_best_alpha(autoencoder, classifier, X_samples, alpha_list=[0.001, 0.0001]):
-    # Find the best alpha for vanilla LatentCF
-    best_cf_model, best_cf_samples = None, None
-    best_losses, best_valid_frac, best_alpha = 0, -1, 0
-
-    for alp in alpha_list:
-        # Fit the LatentCF model
-        cf_model = LatentCF(probability=0.5, alpha=alp, autoencoder=autoencoder)
-        cf_model.fit(classifier)
-
-        cf_samples, losses = cf_model.transform(X_samples)
-        # predicted probabilities of CFs
-        z_pred = classifier.predict(cf_samples)
-
-        print(f"alpha={alp} finished.")
-        valid_frac = validity_score(z_pred)
-
-        if valid_frac >= best_valid_frac:
-            best_cf_model, best_cf_samples = cf_model, cf_samples
-            best_losses, best_alpha, best_valid_frac = losses, alp, valid_frac
-
-    return best_alpha, best_cf_model, best_cf_samples
-
-
 def find_best_lr(
     classifier,
     X_samples,
+    pred_labels,
     autoencoder=None,
     encoder=None,
     decoder=None,
@@ -319,6 +375,7 @@ def find_best_lr(
     step_weights=None,
     random_state=None,
     padding_size=0,
+    target_prob=0.5,
 ):
     # Find the best alpha for vanilla LatentCF
     best_cf_model, best_cf_samples, best_cf_embeddings = None, None, None
@@ -330,7 +387,7 @@ def find_best_lr(
         # TODO: fix the class name here: ModifiedLatentCF or GuidedLatentCF? from _guided or _composite?
         if encoder and decoder:
             cf_model = ModifiedLatentCF(
-                probability=0.5,
+                probability=target_prob,
                 only_encoder=encoder,
                 only_decoder=decoder,
                 optimizer=tf.optimizers.Adam(learning_rate=lr),
@@ -340,7 +397,7 @@ def find_best_lr(
             )
         else:
             cf_model = ModifiedLatentCF(
-                probability=0.5,
+                probability=target_prob,
                 autoencoder=autoencoder,
                 optimizer=tf.optimizers.Adam(learning_rate=lr),
                 pred_margin_weight=pred_margin_weight,
@@ -351,23 +408,25 @@ def find_best_lr(
         cf_model.fit(classifier)
 
         if encoder and decoder:
-            cf_embeddings, losses, _ = cf_model.transform(X_samples)
+            cf_embeddings, losses, _ = cf_model.transform(X_samples, pred_labels)
             cf_samples = decoder.predict(cf_embeddings)
             # predicted probabilities of CFs
-            z_pred = classifier.predict(cf_embeddings)[:, 1]
+            z_pred = classifier.predict(cf_embeddings)
+            cf_pred_labels = np.argmax(z_pred, axis=1)
         else:
-            cf_samples, losses, _ = cf_model.transform(X_samples)
+            cf_samples, losses, _ = cf_model.transform(X_samples, pred_labels)
             # predicted probabilities of CFs
-            z_pred = classifier.predict(cf_samples)[:, 1]
+            z_pred = classifier.predict(cf_samples)
+            cf_pred_labels = np.argmax(z_pred, axis=1)
 
-        valid_frac = validity_score(z_pred)
+        valid_frac = validity_score(pred_labels, cf_pred_labels)
         proxi_score = euclidean_distance(
             remove_paddings(X_samples, padding_size),
             remove_paddings(cf_samples, padding_size),
         )
 
-        # # uncomment for debugging
-        # print(f"lr={lr} finished. Validity: {valid_frac}, proximity: {proxi_score}.")
+        # uncomment for debugging
+        print(f"lr={lr} finished. Validity: {valid_frac}, proximity: {proxi_score}.")
 
         # TODO: fix (padding) dimensions of `lof_estimator` and `nn_estimator` during training, for debugging
         # proxi_score, valid_frac, lof_score, rp_score, cost_mean, cost_std = evaluate(
