@@ -327,28 +327,26 @@ def relative_proximity(
     )
     if pos_idx.any():
         nn_distances1, _ = nn_estimator_pos.kneighbors(
-            np.squeeze(X_inputs[pos_idx]), return_distance=True
+            X_inputs[pos_idx], return_distance=True
         )
+        nn_distances1 = np.squeeze(nn_distances1, axis=-1)
         proximity1 = euclidean_distance(
             X_inputs[pos_idx], cf_samples[pos_idx], average=False
         )
 
-        nn_distance_list = np.concatenate(
-            (nn_distance_list, np.squeeze(nn_distances1)), axis=0
-        )
+        nn_distance_list = np.concatenate((nn_distance_list, nn_distances1), axis=0)
         proximity_list = np.concatenate((proximity_list, proximity1), axis=0)
 
     if neg_idx.any():
         nn_distances2, _ = nn_estimator_neg.kneighbors(
-            np.squeeze(X_inputs[neg_idx]), return_distance=True
+            X_inputs[neg_idx], return_distance=True
         )
+        nn_distances2 = np.squeeze(nn_distances2, axis=-1)
         proximity2 = euclidean_distance(
             X_inputs[neg_idx], cf_samples[neg_idx], average=False
         )
 
-        nn_distance_list = np.concatenate(
-            (nn_distance_list, np.squeeze(nn_distances2)), axis=0
-        )
+        nn_distance_list = np.concatenate((nn_distance_list, nn_distances2), axis=0)
         proximity_list = np.concatenate((proximity_list, proximity2), axis=0)
 
     # TODO: paired proximity score for (X_pred_neg, cf_samples), if not average (?)
