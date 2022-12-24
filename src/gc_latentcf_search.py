@@ -124,14 +124,18 @@ def main():
         # Get 50 samples for CF evaluation if test size larger than 50
         test_size = len(y_test)
         if test_size >= 50:
-            test_indices = np.arange(test_size)
-            _, _, _, rand_test_idx = train_test_split(
-                y_test,
-                test_indices,
-                test_size=50,
-                random_state=RANDOM_STATE,
-                stratify=y_test,
-            )
+            try:
+                test_indices = np.arange(test_size)
+                _, _, _, rand_test_idx = train_test_split(
+                    y_test,
+                    test_indices,
+                    test_size=50,
+                    random_state=RANDOM_STATE,
+                    stratify=y_test,
+                )
+            except ValueError:  # ValueError: The train_size = 1 should be greater or equal to the number of classes = 2
+                rand_test_idx = np.arange(test_size)
+
         else:
             rand_test_idx = np.arange(test_size)
 
