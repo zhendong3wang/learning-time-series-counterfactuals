@@ -1,5 +1,5 @@
-# LatentCF++: Learning Time Series Counterfactuals via Latent Space Representations
-In our paper, we adapt the LatentCF approach to time series classification and propose an improved algorithm named LatentCF++ which introduces additional constraints in the counterfactual generation process. We conduct an extensive experiment on a total of 40 datasets from the UCR archive, comparing to current state-of-the-art methods.
+# Glacier: Guided Locally Constrained Counterfactual Explanations for Time Series Classification
+We propose Glacier, a model-agnostic method for generating locally constrained counterfactual explanations for time series classification using gradient search either on the original space or on a latent space that is learned using an auto-encoder. An additional flexibility of our method is the inclusion of constraints on the counterfactual generation process that favour applying changes to particular time series points or segments, while discouraging changing some others. The main purpose of these constraints is to ensure the generation of more realistic and feasible counterfactuals. We conduct extensive experiments on a total of 40 datasets from the UCR archive, comparing different instantiations of Glacier against three competitors.
 
 If you find this GitHub repo useful in your research work, please consider citing our paper:
 ```
