@@ -11,9 +11,7 @@ from sklearn.utils import resample, shuffle
 from sklearn.metrics import accuracy_score
 from sklearn.neighbors import LocalOutlierFactor, NearestNeighbors
 
-# from _composite import ModifiedLatentCF
 from _guided import ModifiedLatentCF
-from _vanilla import LatentCF
 
 # from keras import backend as K
 
@@ -189,6 +187,8 @@ def upsample_minority(X, y, pos_label=1, neg_label=0, random_state=39):
 """
 deep models needed
 """
+
+
 # Method: For plotting the accuracy/loss of keras models
 def plot_graphs(history, string):
     plt.plot(history.history[string])
