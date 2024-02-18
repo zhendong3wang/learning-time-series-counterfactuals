@@ -1,7 +1,26 @@
 # Glacier: Guided Locally Constrained Counterfactual Explanations for Time Series Classification
-We propose Glacier, a model-agnostic method for generating locally constrained counterfactual explanations for time series classification using gradient search either on the original space or on a latent space that is learned using an auto-encoder. An additional flexibility of our method is the inclusion of constraints on the counterfactual generation process that favour applying changes to particular time series points or segments, while discouraging changing some others. The main purpose of these constraints is to ensure the generation of more realistic and feasible counterfactuals. We conduct extensive experiments on a total of 40 datasets from the UCR archive, comparing different instantiations of Glacier against three competitors.
+Glacier: Guided Locally Constrained Counterfactual Explanations for Time Series Classification<br/>
+Published at Machine Learning (MACH) Journal, 2024 Mar.<br/>
+(Originally published at the DS'2021 Conference)<br/>
+[[paper_link]](https://doi.org/10.1007/s10994-023-06502-x)
+
+We propose `Glacier`, a model-agnostic method for generating *locally constrained counterfactual explanations* for time series classification using gradient search either on the original space, or on a latent space that is learned using an auto-encoder. An additional flexibility of our method is the inclusion of constraints on the counterfactual generation process that favour applying changes to particular time series points or segments, while discouraging changing some others. The main purpose of these constraints is to ensure the generation of more realistic and feasible counterfactuals. We conduct extensive experiments on a total of 40 datasets from the UCR archive, comparing different instantiations of Glacier against three competitors.
 
 If you find this GitHub repo useful in your research work, please consider citing our paper:
+```
+@article{wang_glacier_2024,
+	title = {Glacier: guided locally constrained counterfactual explanations for time series classification},
+	volume = {113},
+	issn = {1573-0565},
+	doi = {10.1007/s10994-023-06502-x},
+	number = {3},
+	journal = {Machine Learning},
+	author = {Wang, Zhendong and Samsten, Isak and Miliou, Ioanna and Mochaourab, Rami and Papapetrou, Panagiotis},
+	month = mar,
+	year = {2024},
+}
+```
+Please also consider citing the original publication:
 ```
 @inproceedings{wang_learning_2021,
 	title = {Learning Time Series Counterfactuals via Latent Space Representations},
@@ -9,54 +28,80 @@ If you find this GitHub repo useful in your research work, please consider citin
 	author = {Wang, Zhendong and Samsten, Isak, and Mochaourab, Rami, and Papapetrou, Panagiotis},
 	year = {2021},
 }
+``` 
+
+## Dependencies
+For reproducibility, all the experiments and the computational runtime are evaluated with NVIDIA GeForce RTX 2080 (GPU) and AMD Ryzen Threadripper 2950X 16-Core Processor (CPU), with following dependencies:
+  - python=3.8
+  - cudatoolkit=11.2
+  - cudnn=8.1
+
+### Installation:
+We recommend to create a conda virtual environment with the following command:
+```
+conda env create -f environment.yml
 ```
 
 ## Data preparation
 
-We mainly focus on the problem of binary classification tasks with univariate time series data. After filtering, a subset of 40 datasets from the [UCR archive](https://www.cs.ucr.edu/∼eamonn/time_series_data_2018/) is selected, containing various representations from different data sources. For example,TwoLeadECG represents ECG measurements in the medical domain and Wafer exemplifies sensor data in semiconductor  manufacturing. In terms of time series length, it varies from 24 (ItalyPowerDemand) to 2709 timesteps(HandOutlines) in our chosen subset.
+We mainly focus on the problem of binary classification tasks with univariate time series data. After filtering, a subset of 40 datasets from the [UCR archive](https://www.cs.ucr.edu/∼eamonn/time_series_data_2018/) is selected, containing various representations from different data sources. For example, *TwoLeadECG* represents ECG measurements in the medical domain and *Wafer* exemplifies sensor data in semiconductor  manufacturing. In terms of time series length, it varies from `24` (*ItalyPowerDemand*) to `2709` timesteps(*HandOutlines*) in our chosen subset.
 
-For the evaluation in our experiment, we choose to apply a standard 80/20 split for all the datasets. Also, to compensate the imbalanced target classes in specific datasets, we apply a simple upsampling  technique, to resample with duplicates for the  minority target class of training data. The random  seed is fixed to 39 when splitting data into training/testing sets and in the upsampling approach.
+For the evaluation in our experiment, we choose to apply 5-fold cross-validation with stratified splits, with a standard 80/20 training and testing for all the datasets. Also, to compensate the imbalanced target classes in specific datasets, we apply a simple upsampling technique and then choose to generate counterfactual explanations for a subset of 50 samples with a fixed random seed among the testing data. 
 
 ## Experiment Setup
 
-In the experiment, we choose to train separate CNN and long short-term memory (LSTM) classification and auto-encoder models, as main components to apply the LatentCF++ frameworks. We opt to use these simpler architectures to highlight the explainable
-power of latent space representations.
+In the experiment, we choose to train one of the most recent state-of-the-art CNN models, `LSTM-FCN`, as the black-box model to apply the Glacier counterfactual framework. We then employ two autoencoders to transform the original samples into counterfactuals: a 1-dimensional convolutional neural network (`1dCNN`) model and an `LSTM` model; together with a version of gradient search directly on the original space (`NoAE`).
 
-Thus, we construct two instantiations for both LatentCF and LatentCF++ in our experiment: 1dCNN and LSTM. We show a detailed comparison of different components and hyperparameters for each instantiation in the following table:
+Thus, we explore four variants of Glacier: *unconstrained*, *example-specific*, *global*, and *uniform* across 40 UCR datasets. In our main experiment, we set the decision boundary threshold $\tau=0.5$, and the prediction margin weight $w=0.5$ in the optimization function. The variants are explained as below:
+- *unconstrained*: encouraging changes in the whole time series;
+- *example-specific*: imposing constraints to favouring changes to particular time series points on a given test example, using LIMESegment (Sivill et al., 2022); 
+- *global*: imposing constraints to favouring changes to particular time series points across all the test examples, using interval importance;  
+- *uniform*: disencouraging changes in the whole time series. 
 
-| Method | Instantiation | Auto-encoder | Classifier | Optimization | Threshold |
-| ------ | ------------- | ------------ | ---------- | ------------ | --------- | 
-| LatentCF++ | 1dCNN | 1dCNN-AE | 1dCNN-CLF | Adam | 0.5 |
-| LatentCF++ | LSTM | LSTM-AE | LSTM-CLF | Adam | 0.5 |
-| LatentCF++ | 1dCNN-C | 1dCNN-C | | Adam | 0.5 |
-| LatentCF | 1dCNN | 1dCNN-AE | 1dCNN-CLF | Vanilla GD | No |
-| LatentCF | LSTM | LSTM-AE | LSTM-CLF | Vanilla GD | No |
-
-
-### Implementation Details 
-
-All deep learning models are implemented in Keras. For 1dCNN-AE, LSTM-AE, and 1dCNN-C, we set the training epochs to 50; while for classification models, the training epochs are set to 150 for both 1dCNN-CLF and LSTM-CLF. To reduce overfitting and improve the generalizability of our networks, we employ early stopping during model training. Adam optimizer is employed for all networks with learning rates ranging from 0.0001 and 0.001 for different models. The batch size is set to 32 for all of them.
 
 ### Baseline Models
+We additionally compare with three baseline models for the counterfactual generation:
+- (Karlsson et al., 2018) *Random shapelet forest (RSF)*: we set the number of estimators to `50` and max depth to `5`, while the other parameters are kept at the default values (see the original implementation: `https://github.com/isaksamsten/wildboar`);
+- (Karlsson et al., 2018) *k-NN counterfactual (k-NN)*: we train a k-NN classifier with k equals to `5` and the distance metric set to Euclidean;
+- (Delaney et al, 2021) *Native Guide (NG)*: we adopt an implementation and default parameters from `https://github.com/e-delaney/Instance-Based_CFE_TSC`. 
 
-We adopt the first baseline model from the original framework, FGD, which applies the LatentCF method with only a classifier 1dCNN-CLF to perturb samples in the original feature space directly. In addition, we apply two extra baseline methods from local and global time series tweaking approaches - random shapelet forest (RSF) and the k-NN counterfactual method (k-NN).
 
 ## Running the comparison
 
-The implementation code of our experiment is at [here](./latentcf-search.py). For executing the experiment for a single dataset (e.g. TwoLeadECG), simply run
+The implementation code of our experiment is at [here](./src/gc_latentcf_search.py), with a detailed description of Glacier model parameters. For executing the experiment for a single dataset (e.g. *TwoLeadECG*), simply run:
 ```
-python notebooks/latentcf-search.py --dataset TwoLeadECG --pos 1 --neg 2 --output twoleadecg-outfile.csv --shallow-cnn 
+python src/gc_latentcf_search.py --dataset TwoLeadECG --pos 1 --neg 2 --output twoleadecg-outfile.csv --w-type local --lr-list 0.0001 0.0001 0.0001;
 ```
 
-Then for running the experiment for all the datasets from UCR, run the following code:
+Then for running the experiment for all the 40 datasets from UCR, run the following code:
 ```
 bash run_all_datasets.sh
 ```
 
+```
+bash run_cf_baselines.sh
+```
+
+Finally, we conduct an ablation study to examine the effects of the following two hyperparameters in Glacier for the *TwoLeadECG* dataset: prediction margin weight parameter $w$ and decision boundary threshold $\tau$, using the following code:
+```
+bash run_ablation_pred_margin.sh
+```
+
+```
+bash run_ablation_tau.sh
+```
+
+
 ## Results
 
-The results of quantitative analysis are available at this [csv file](./results/all-results.csv). Besides, we have two examples generated from LatentCF++ as below: 
+The results of main analysis are available at this [csv file](./results/results_final_all.csv), together with two ablation study [csv files](./results/). 
 
-![examples](./results/result-examples.png) 
+Besides, we have two example cases generated from Glacier. The first one shows examples of counterfactuals for ECG measurements using *unconstrained* and *example-specific* constraints in Glacier:
 
-Illustrated in blue are the original time series and in red the generated counterfactuals of the opposite class. By inspecting these counterfactuals, domain experts can not only gain improved understandings of the classifier decision boundary, but also can gain insight on how these predictions can be reversed.
+![examples](./results/results_example_local.png) 
+
+And the second case show the counterfactuals for engine signals with *unconstrained* and *global constraints* in Glacier:
+
+![examples](./results/results_example_global.png) 
+
+In both cases, illustrated in blue are the original time series and in red the generated counterfactuals of the opposite class. The “red” bars suggest the time series points for which changes are favourable. 
